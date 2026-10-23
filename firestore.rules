@@ -1,0 +1,16 @@
+// firestore.rules - Regras de segurança do Firestore
+// Permite leitura/escrita para usuários autenticados anonimamente
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Coleção de requisições - acesso total para usuários autenticados
+    match /requisicoes/{docId} {
+      allow read, write: if request.auth != null;
+    }
+    // Coleção de operadores - universal e sincronizado para todos
+    match /operadores/{docId} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

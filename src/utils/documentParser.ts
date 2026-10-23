@@ -1,0 +1,268 @@
+// src/utils/documentParser.ts
+// Utilitário para ler texto de arquivos PDF e Imagens (fotos) e extrair dados da Ficha de Separação
+
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
+import { createWorker } from 'tesseract.js';
+import { ItemRequisicao } from '../types';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+
+export interface DadosRequisicaoExtraidos {
+  numero_nota: string;
+  solicitante: string;
+  itens: ItemRequisicao[];
+  textoBruto: string;
+}
+
+/**
+ * Lê o arquivo PDF carregado pelo usuário e extrai todo o texto.
+ */
+export async function extrairTextoDoPdf(file: File): Promise<string> {
+  const arrayBuffer = await file.arrayBuffer();
+  const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+  const pdfDoc = await loadingTask.promise;
+
+  let textoCompleto = '';
+
+  for (let numPagina = 1; numPagina <= pdfDoc.numPages; numPagina++) {
+    const page = await pdfDoc.getPage(numPagina);
+    const content = await page.getTextContent();
+    const strings = content.items
+      .map((item: any) => item.str || '')
+      .filter((s: string) => s.trim().length > 0);
+    textoCompleto += strings.join(' ') + '\n';
+  }
+
+  return textoCompleto;
+}
+
+/**
+ * Extrai texto de imagens (fotos escaneadas, fotos de celular, PNG/JPG) via Tesseract OCR.
+ */
+export async function extrairTextoDeImagem(
+  file: File,
+  onProgress?: (progresso: number) => void
+): Promise<string> {
+  const worker = await createWorker('por');
+  try {
+    const ret = await worker.recognize(file);
+    return ret.data.text;
+  } finally {
+    await worker.terminate();
+  }
+}
+
+/**
+ * Analisa o texto extraído de PDF ou Foto, com suporte especial para Fichas de Separação
+ * (ex: Locações | Cód.Peça | Qtde | Descrição | Cliente | Data).
+ */
+export function analisarTextoRequisicao(texto: string, nomeArquivo: string): DadosRequisicaoExtraidos {
+  // 1. Número da Ficha / Nota / Atendimento
+  let numero_nota = '';
+
+  // Procura "Ficha de Separação - 42947" ou "Atendimento: 6507843"
+  const matchFicha = texto.match(/Ficha(?:\s+de)?\s+Separa[cç][aã]o\s*[-:]?\s*(\d+)/i);
+  const matchAtendimento = texto.match(/Atendimento(?:\s*[:\n\r]+)?\s*(\d{5,10})/i);
+  const matchGenerico = texto.match(/(?:NF|NOTA|N[ÚU]MERO|ORDEM|REQ(?:UISI[CÇ][AÃ]O)?|N°|Nº)[^\w\d]*([A-Z0-9\-\/]{3,15})/i);
+
+  if (matchFicha && matchFicha[1]) {
+    numero_nota = matchFicha[1].trim();
+  } else if (matchAtendimento && matchAtendimento[1]) {
+    numero_nota = matchAtendimento[1].trim();
+  } else if (matchGenerico && matchGenerico[1]) {
+    numero_nota = matchGenerico[1].toUpperCase();
+    if (!numero_nota.includes('-') && !numero_nota.startsWith('NF')) {
+      numero_nota = `NF-${numero_nota}`;
+    }
+  } else {
+    // Fallback: usar o nome do arquivo se contiver número
+    const cleanName = nomeArquivo.replace(/\.[a-zA-Z0-9]+$/i, '').replace(/[^a-zA-Z0-9\-_]/g, '');
+    numero_nota = cleanName.length > 2 ? cleanName.toUpperCase() : `REC-${Math.floor(10000 + Math.random() * 90000)}`;
+  }
+
+  // 2. Extração do Cliente / Solicitante (pega estritamente o NOME após o código do cliente)
+  let solicitante = '';
+
+  // Procura a palavra 'Cliente' no texto para não confundir com a natureza de operação (ex: 1840 - VENDA NFE)
+  const posCliente = texto.search(/\bCliente\b/i);
+
+  if (posCliente !== -1) {
+    const textoAposCliente = texto.slice(posCliente);
+
+    // Procura o padrão de código numérico seguido de hífen logo após o rótulo 'Cliente' (ex: 60202 - TEMA TRANSPORTES ESPECIAL DE)
+    const matchComCod = textoAposCliente.match(/\b\d{4,8}\s*[-–—]\s*([^\n\r]+)/);
+    if (matchComCod && matchComCod[1]) {
+      let nome = matchComCod[1].trim();
+
+      // Delimitadores que marcam o término do nome do cliente quando o PDF junta os blocos de texto
+      const delimitadores = [
+        /\b(?:DCCO|Filial|Vendedor|NORONHA|Transportadora|E-mail|Email|Data|Atendimento|Qtd|Volumes|Loca[cç][õo]es|C[oó]d|Registros|S[eé]rie)\b/i,
+        /\b\d{2}\/\d{2}\/\d{4}\b/, // Datas (ex: 22/10/2026)
+        /\b[^\s@]+@[^\s@]+\b/,     // E-mails (ex: tema@...)
+        /\b\d{6,8}\b/,              // Números avulsos (ex: 6507843)
+      ];
+
+      for (const delim of delimitadores) {
+        const idx = nome.search(delim);
+        if (idx !== -1) {
+          nome = nome.substring(0, idx);
+        }
+      }
+
+      nome = nome.replace(/^[-–—:\s]+|[-–—:\s]+$/g, '').trim();
+
+      if (nome.length > 2 && !/^(?:Loca[cç][õo]es|E-mail|Email|Transportadora)$/i.test(nome)) {
+        solicitante = nome;
+      }
+    }
+
+    // Se não encontrou código numérico, pega o que estiver na linha de 'Cliente:'
+    if (!solicitante) {
+      const matchLinha = textoAposCliente.match(/Cliente\s*[:\-]?\s*([^\n\r]+)/i);
+      if (matchLinha && matchLinha[1]) {
+        let raw = matchLinha[1].trim();
+        const delimitadores = [
+          /\b(?:DCCO|Filial|Vendedor|NORONHA|Transportadora|E-mail|Email|Data|Atendimento|Qtd|Volumes|Loca[cç][õo]es|C[oó]d|Registros|S[eé]rie)\b/i,
+          /\b\d{2}\/\d{2}\/\d{4}\b/,
+          /\b[^\s@]+@[^\s@]+\b/,
+          /\b\d{6,8}\b/,
+        ];
+        for (const delim of delimitadores) {
+          const idx = raw.search(delim);
+          if (idx !== -1) raw = raw.substring(0, idx);
+        }
+        raw = raw.replace(/^\d+\s*[-–—]?\s*/, '').replace(/^[-–—:\s]+|[-–—:\s]+$/g, '').trim();
+        if (raw.length > 2 && !/^(?:Loca[cç][õo]es|E-mail|Email|Transportadora)$/i.test(raw)) {
+          solicitante = raw;
+        }
+      }
+    }
+  }
+
+  // Fallback para outros tipos de documentos (Solicitante / Empresa / Destinatário)
+  if (!solicitante) {
+    const matchSolicitante = texto.match(/(?:SOLICITANTE|DESTINAT[ÁA]RIO|EMPRESA)\s*[:\-]?\s*([^\n\r]+)/i);
+    if (matchSolicitante && matchSolicitante[1]) {
+      let raw = matchSolicitante[1].trim();
+      raw = raw.split(/\b(?:E-mail|Email|Transportadora|Data|Filial|Vendedor|Atendimento|Qtd|Loca[cç][õo]es)\b/i)[0].trim();
+      raw = raw.replace(/^\d+\s*[-–—]?\s*/, '').replace(/^[-–—:\s]+/, '').trim();
+      if (raw.length > 2 && !/^(?:Loca[cç][õo]es|E-mail|Email)$/i.test(raw)) {
+        solicitante = raw;
+      }
+    }
+  }
+
+  if (!solicitante) {
+    solicitante = 'Solicitante não especificado';
+  }
+
+  // 3. Extração dos Itens da Tabela (Locações, Cód.Peça, Qtde, Descrição)
+  const itens: ItemRequisicao[] = [];
+  const linhas = texto.split(/[\r\n]+/);
+
+  for (const linha of linhas) {
+    const l = linha.trim();
+    if (!l) continue;
+
+    // Ignorar cabeçalhos e rodapés comuns
+    if (/Loca[cç][õo]es|C[oó]d\.?\s*Pe[cç]a|Registros|Observa[cç][aã]o|Separado por|Conferido por|Notas Fiscais/i.test(l)) {
+      continue;
+    }
+
+    // Padrão Ficha DCCO: "26A01 FF5706I 2 FILTRO DE COMBUSTIVEL CS191008"
+    // Locação (ex: 26A01, 26B01, 26G01, A-01-02, BOX-1) + Cód Peça (ex: FF5706I, LF16352I, MAT-123) + Qtde (ex: 2, 3) + Descrição
+    const matchFichaItem = l.match(/^([0-9]{1,3}[A-Z][0-9]{2}|[A-Z]-\d{2}-\d{2}|[A-Z]{1,3}-\d{1,3})\s+([A-Z0-9\-\/]{4,15})\s+(\d+(?:[.,]\d+)?)\s+(.+)$/i);
+
+    if (matchFichaItem) {
+      const locacao = matchFichaItem[1].toUpperCase();
+      const codigo = matchFichaItem[2].toUpperCase();
+      const rawQtd = matchFichaItem[3].trim();
+      const quantidade = rawQtd.toLowerCase().includes('und') ? rawQtd : `${rawQtd} und`;
+      let descricao = matchFichaItem[4].trim();
+
+      // Limpar eventuais textos de fim de tabela se colados na mesma linha
+      descricao = descricao.split(/\b(?:Observa[cç][aã]o|Registros|Separado)\b/i)[0].trim();
+
+      itens.push({
+        codigo,
+        nome: descricao,
+        localizacao: locacao,
+        quantidade,
+        separado: false,
+      });
+      continue;
+    }
+
+    // Padrão alternativo / genérico:
+    const matchCod = l.match(/\b([A-Z]{2,5}-\d{3,6}|[A-Z]{2}\d{4,6}[A-Z]?|\d{5,8})\b/i);
+    const matchLoc = l.match(/\b([0-9]{1,3}[A-Z][0-9]{2}|[A-Z]-\d{2}-\d{2}|[A-Z]\d{2}-\d{2}|[A-Z]{1,3}-\d{1,3})\b/i);
+    const matchQtd = l.match(/\b(\d+(?:[.,]\d+)?\s*(?:unidades?|pe[cç]as?|metros?|un|und|p[cç]|cx|kg|pct|m)?)\b/i);
+
+    if (matchCod && (matchLoc || matchQtd) && l.length > 8) {
+      const codigo = matchCod[1].toUpperCase();
+      const localizacao = matchLoc ? matchLoc[1].toUpperCase() : 'A-01-01';
+      let quantidade = matchQtd ? matchQtd[1] : '1 und';
+      if (!/[a-zA-Z]/.test(quantidade)) {
+        quantidade = `${quantidade.trim()} und`;
+      }
+
+      let nome = l
+        .replace(matchCod[0], '')
+        .replace(matchLoc ? matchLoc[0] : '', '')
+        .replace(matchQtd ? matchQtd[0] : '', '')
+        .replace(/^[\s\-_.:;]+|[\s\-_.:;]+$/g, '')
+        .trim();
+
+      if (nome.length < 3) {
+        nome = `Material ${codigo}`;
+      }
+
+      // Evita duplicatas idênticas de código na mesma leitura
+      if (!itens.some(it => it.codigo === codigo && it.localizacao === localizacao)) {
+        itens.push({
+          codigo,
+          nome,
+          localizacao,
+          quantidade,
+          separado: false,
+        });
+      }
+    }
+  }
+
+  // Fallback se não conseguiu quebrar por linhas (ex: OCR tudo em 1 linha contínua)
+  if (itens.length === 0) {
+    // Tenta regex global procurando sequências: (Locação) (Cód) (Qtd) (Descrição)
+    const regexSeq = /([0-9]{1,3}[A-Z][0-9]{2})\s+([A-Z0-9]{5,10})\s+(\d+)\s+([A-Z\s0-9]{5,40}?)(?=[0-9]{1,3}[A-Z][0-9]{2}|Registros|Observa|$)/gi;
+    let seqMatch;
+    while ((seqMatch = regexSeq.exec(texto)) !== null) {
+      const q = seqMatch[3].trim();
+      itens.push({
+        localizacao: seqMatch[1].toUpperCase(),
+        codigo: seqMatch[2].toUpperCase(),
+        quantidade: `${q} und`,
+        nome: seqMatch[4].trim(),
+        separado: false,
+      });
+    }
+  }
+
+  // Se mesmo assim nenhum item foi parseado, cria 1 item genérico com o nome do arquivo
+  if (itens.length === 0) {
+    itens.push({
+      codigo: 'MAT-001',
+      nome: 'Material importado (' + nomeArquivo + ')',
+      localizacao: 'A-01-01',
+      quantidade: '1 und',
+      separado: false,
+    });
+  }
+
+  return {
+    numero_nota,
+    solicitante,
+    itens,
+    textoBruto: texto,
+  };
+}
