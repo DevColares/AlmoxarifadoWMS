@@ -28,10 +28,49 @@ export async function extrairTextoDoPdf(file: File): Promise<string> {
   for (let numPagina = 1; numPagina <= pdfDoc.numPages; numPagina++) {
     const page = await pdfDoc.getPage(numPagina);
     const content = await page.getTextContent();
-    const strings = content.items
-      .map((item: any) => item.str || '')
-      .filter((s: string) => s.trim().length > 0);
-    textoCompleto += strings.join(' ') + '\n';
+    
+    // Agrupa itens de texto por coordenada vertical (Y) com tolerância de ±3px para manter as linhas exatas da tabela
+    const itensPosicionados: Array<{ x: number; y: number; str: string }> = [];
+    for (const item of content.items as any[]) {
+      if (item.str && item.str.trim().length > 0) {
+        itensPosicionados.push({
+          x: item.transform[4] || 0,
+          y: Math.round((item.transform[5] || 0) * 10) / 10,
+          str: item.str.trim(),
+        });
+      }
+    }
+
+    // Ordena do topo para a base (Y decrescente)
+    itensPosicionados.sort((a, b) => b.y - a.y);
+
+    // Agrupa em linhas por proximidade de Y
+    const linhas: Array<Array<{ x: number; str: string }>> = [];
+    let linhaAtual: Array<{ x: number; str: string }> = [];
+    let yAtual: number | null = null;
+
+    for (const item of itensPosicionados) {
+      if (yAtual === null || Math.abs(item.y - yAtual) <= 3.5) {
+        linhaAtual.push({ x: item.x, str: item.str });
+        if (yAtual === null) yAtual = item.y;
+      } else {
+        if (linhaAtual.length > 0) {
+          // Ordena da esquerda para a direita (X crescente)
+          linhaAtual.sort((a, b) => a.x - b.x);
+          linhas.push(linhaAtual);
+        }
+        linhaAtual = [{ x: item.x, str: item.str }];
+        yAtual = item.y;
+      }
+    }
+    if (linhaAtual.length > 0) {
+      linhaAtual.sort((a, b) => a.x - b.x);
+      linhas.push(linhaAtual);
+    }
+
+    for (const l of linhas) {
+      textoCompleto += l.map((i) => i.str).join(' ') + '\n';
+    }
   }
 
   return textoCompleto;
@@ -165,41 +204,92 @@ export function analisarTextoRequisicao(texto: string, nomeArquivo: string): Dad
     const l = linha.trim();
     if (!l) continue;
 
-    // Ignorar cabeçalhos e rodapés comuns
-    if (/Loca[cç][õo]es|C[oó]d\.?\s*Pe[cç]a|Registros|Observa[cç][aã]o|Separado por|Conferido por|Notas Fiscais/i.test(l)) {
+    // 1. Ignorar cabeçalhos e rodapés comuns
+    if (/^(?:Loca[cç][õo]es|C[oó]d\.?\s*Pe[cç]a|Registros|Observa[cç][aã]o|Separado por|Conferido por|Notas Fiscais|Ficha de Separa|Atendimento|Cliente|Data|Filial)/i.test(l)) {
       continue;
     }
 
-    // Padrão Ficha DCCO: "26A01 FF5706I 2 FILTRO DE COMBUSTIVEL CS191008"
-    // Locação (ex: 26A01, 26B01, 26G01, A-01-02, BOX-1) + Cód Peça (ex: FF5706I, LF16352I, MAT-123) + Qtde (ex: 2, 3) + Descrição
-    const matchFichaItem = l.match(/^([0-9]{1,3}[A-Z][0-9]{2}|[A-Z]-\d{2}-\d{2}|[A-Z]{1,3}-\d{1,3})\s+([A-Z0-9\-\/]{4,15})\s+(\d+(?:[.,]\d+)?)\s+(.+)$/i);
+    // 2. Localizar padrão de Locação na linha:
+    // Ex: "26A01", "26A010", "A-01-02", "A01-02", "BOX-01", "RUA-01", "01A02", "A01", "DEP-01"
+    const regexLocacao = /\b([0-9]{1,3}[A-Z][0-9]{1,3}|[A-Z]-\d{1,2}-\d{1,2}|[A-Z]\d{1,2}-\d{1,2}|[A-Z]{1,4}-\d{1,3}|[A-Z][0-9]{2,3})\b/i;
+    const matchLoc = l.match(regexLocacao);
 
-    if (matchFichaItem) {
-      const locacao = matchFichaItem[1].toUpperCase();
-      const codigo = matchFichaItem[2].toUpperCase();
-      const rawQtd = matchFichaItem[3].trim();
-      const quantidade = rawQtd.toLowerCase().includes('und') ? rawQtd : `${rawQtd} und`;
-      let descricao = matchFichaItem[4].trim();
+    if (matchLoc) {
+      const locacao = matchLoc[1].toUpperCase();
 
-      // Limpar eventuais textos de fim de tabela se colados na mesma linha
-      descricao = descricao.split(/\b(?:Observa[cç][aã]o|Registros|Separado)\b/i)[0].trim();
+      // Pega o conteúdo antes e depois da locação
+      const indiceLoc = l.indexOf(matchLoc[0]);
+      const restoLinha = (l.substring(0, indiceLoc) + ' ' + l.substring(indiceLoc + matchLoc[0].length)).trim();
 
-      itens.push({
-        codigo,
-        nome: descricao,
-        localizacao: locacao,
-        quantidade,
-        separado: false,
-      });
-      continue;
+      // Procura tokens na linha
+      const tokens = restoLinha.split(/\s+/).filter(Boolean);
+
+      if (tokens.length >= 2) {
+        // Encontra o código da peça (token alfanumérico, ex: FF5706I, LF16352I, 3937706, 04103812, MAT-001)
+        let codigoIndex = -1;
+        for (let i = 0; i < tokens.length; i++) {
+          const t = tokens[i];
+          // Código costuma ter letras+números ou ser código numérico de 4+ dígitos
+          if (/^[A-Z0-9\-\/]{4,18}$/i.test(t) && !/^\d{1,3}$/.test(t) && !/^(?:UND|UN|PC|CX|KG|M)$/i.test(t)) {
+            codigoIndex = i;
+            break;
+          }
+        }
+
+        // Se não achou com critério estrito, assume o primeiro token longo
+        if (codigoIndex === -1 && tokens.length > 0) {
+          codigoIndex = 0;
+        }
+
+        if (codigoIndex !== -1) {
+          const codigo = tokens[codigoIndex].toUpperCase();
+
+          // Encontra quantidade (número inteiro ou decimal)
+          let qtdIndex = -1;
+          for (let i = 0; i < tokens.length; i++) {
+            if (i !== codigoIndex && /^\d+(?:[.,]\d+)?(?:\s*(?:un|und|pc|pça|cx|kg|m))?$/i.test(tokens[i])) {
+              qtdIndex = i;
+              break;
+            }
+          }
+
+          let quantidade = '1 und';
+          if (qtdIndex !== -1) {
+            const rawQtd = tokens[qtdIndex];
+            quantidade = /[a-zA-Z]/.test(rawQtd) ? rawQtd : `${rawQtd} und`;
+          }
+
+          // Descrição do material é tudo o que sobrar
+          const indicesUsados = new Set([codigoIndex, qtdIndex]);
+          let descricaoTokens = tokens.filter((_, idx) => !indicesUsados.has(idx));
+
+          // Limpa marcadores comuns de rodapé
+          let descricao = descricaoTokens.join(' ').replace(/\b(?:Observa[cç][aã]o|Registros|Separado|Conferido).*/i, '').trim();
+
+          if (descricao.length < 2) {
+            descricao = `Material ${codigo}`;
+          }
+
+          // Adiciona se não for duplicata idêntica
+          if (!itens.some(it => it.codigo === codigo && it.localizacao === locacao)) {
+            itens.push({
+              codigo,
+              nome: descricao,
+              localizacao: locacao,
+              quantidade,
+              separado: false,
+            });
+            continue;
+          }
+        }
+      }
     }
 
-    // Padrão alternativo / genérico:
+    // 3. Fallback genérico caso a linha não tenha o formato padrão de locação
     const matchCod = l.match(/\b([A-Z]{2,5}-\d{3,6}|[A-Z]{2}\d{4,6}[A-Z]?|\d{5,8})\b/i);
-    const matchLoc = l.match(/\b([0-9]{1,3}[A-Z][0-9]{2}|[A-Z]-\d{2}-\d{2}|[A-Z]\d{2}-\d{2}|[A-Z]{1,3}-\d{1,3})\b/i);
     const matchQtd = l.match(/\b(\d+(?:[.,]\d+)?\s*(?:unidades?|pe[cç]as?|metros?|un|und|p[cç]|cx|kg|pct|m)?)\b/i);
 
-    if (matchCod && (matchLoc || matchQtd) && l.length > 8) {
+    if (matchCod && (matchLoc || matchQtd) && l.length > 6) {
       const codigo = matchCod[1].toUpperCase();
       const localizacao = matchLoc ? matchLoc[1].toUpperCase() : 'A-01-01';
       let quantidade = matchQtd ? matchQtd[1] : '1 und';
@@ -218,7 +308,6 @@ export function analisarTextoRequisicao(texto: string, nomeArquivo: string): Dad
         nome = `Material ${codigo}`;
       }
 
-      // Evita duplicatas idênticas de código na mesma leitura
       if (!itens.some(it => it.codigo === codigo && it.localizacao === localizacao)) {
         itens.push({
           codigo,
@@ -233,8 +322,7 @@ export function analisarTextoRequisicao(texto: string, nomeArquivo: string): Dad
 
   // Fallback se não conseguiu quebrar por linhas (ex: OCR tudo em 1 linha contínua)
   if (itens.length === 0) {
-    // Tenta regex global procurando sequências: (Locação) (Cód) (Qtd) (Descrição)
-    const regexSeq = /([0-9]{1,3}[A-Z][0-9]{2})\s+([A-Z0-9]{5,10})\s+(\d+)\s+([A-Z\s0-9]{5,40}?)(?=[0-9]{1,3}[A-Z][0-9]{2}|Registros|Observa|$)/gi;
+    const regexSeq = /([0-9]{1,3}[A-Z][0-9]{2,3}|[A-Z]-\d{2}-\d{2})\s+([A-Z0-9\-\/]{4,15})\s+(\d+)\s+([A-Z\s0-9]{4,50}?)(?=[0-9]{1,3}[A-Z][0-9]{2,3}|Registros|Observa|$)/gi;
     let seqMatch;
     while ((seqMatch = regexSeq.exec(texto)) !== null) {
       const q = seqMatch[3].trim();
