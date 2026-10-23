@@ -190,9 +190,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const unsubscribe = ouvirRequisicoes((novas) => {
       const prev = prevReqRef.current;
+      const ehPrimeiraCarga = prev.length === 0 && carregando;
+
       novas.forEach((nova) => {
         const antiga = prev.find((r) => r.id === nova.id);
-        if (antiga && antiga.status !== nova.status) {
+
+        // NOVA REQUISIÇÃO DETECTADA (Upload ou Criação)
+        if (!antiga && !ehPrimeiraCarga) {
+          enviarNotificacao(
+            'Nova Requisição!',
+            `Nota: ${nova.numero_nota} | Solicitante: ${nova.solicitante} (${nova.itens?.length || 0} itens)`,
+            'aviso'
+          );
+        } else if (antiga && antiga.status !== nova.status) {
+          // Alteração de status
           const msgs: Record<string, string> = {
             EM_SEPARACAO: `📦 ${nova.separador_nome} assumiu ${nova.numero_nota}`,
             PAUSADO: `⏸️ ${nova.numero_nota} foi pausada - ${nova.motivo_pausa}`,

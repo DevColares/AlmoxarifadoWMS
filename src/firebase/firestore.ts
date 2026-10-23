@@ -187,3 +187,23 @@ export async function buscarHistorico(): Promise<Requisicao[]> {
     }
   }
 }
+
+// Limpar banco de dados: exclui todas as requisições e reseta operadores opcionais
+export async function limparBancoDados(incluirOperadores: boolean = false): Promise<void> {
+  // 1. Apaga todas as requisições
+  const snapReqs = await getDocs(collection(db, COLECAO));
+  const deletePromises = snapReqs.docs.map((d) => deleteDoc(doc(db, COLECAO, d.id)));
+  await Promise.all(deletePromises);
+
+  // 2. Se solicitado, reseta também os operadores para a lista padrão
+  if (incluirOperadores) {
+    const snapOps = await getDocs(collection(db, COLECAO_OPERADORES));
+    const deleteOps = snapOps.docs.map((d) => deleteDoc(doc(db, COLECAO_OPERADORES, d.id)));
+    await Promise.all(deleteOps);
+
+    for (const op of OPERADORES) {
+      await setDoc(doc(db, COLECAO_OPERADORES, op.id), op);
+    }
+  }
+}
+

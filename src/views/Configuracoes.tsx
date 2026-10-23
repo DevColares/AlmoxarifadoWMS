@@ -3,10 +3,11 @@
 
 import React, { useState } from 'react';
 import {
-  Users, UserPlus, Shield, User, Edit3, Trash2, Check, X, Star, Settings
+  Users, UserPlus, Shield, User, Edit3, Trash2, Check, X, Star, Settings, Database, AlertTriangle, RefreshCw
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { Operador } from '../types';
+import { limparBancoDados } from '../firebase/firestore';
 
 export function Configuracoes() {
   const {
@@ -85,6 +86,38 @@ export function Configuracoes() {
       onConfirmar: () => {
         removerOperador(op.id);
         enviarNotificacao('Removido', `Operador "${op.nome}" foi removido.`, 'info');
+      },
+    });
+  };
+
+  const [limpandoBanco, setLimpandoBanco] = useState(false);
+
+  const handleLimparBanco = (apenasRequisicoes: boolean) => {
+    solicitarConfirmacao({
+      titulo: apenasRequisicoes ? 'Limpar Pedidos e Histórico' : 'Zerar Banco de Dados Completo',
+      mensagem: apenasRequisicoes
+        ? 'Atenção: Todas as requisições em andamento e todo o histórico serão excluídos permanentemente. Os operadores cadastrados serão mantidos. Deseja continuar?'
+        : 'PERIGO: Todas as requisições, métricas e operadores serão excluídos e resetados para o padrão de fábrica. Deseja realmente prosseguir?',
+      tipo: 'perigo',
+      textoConfirmar: 'Sim, Excluir Tudo',
+      textoCancelar: 'Cancelar',
+      onConfirmar: async () => {
+        try {
+          setLimpandoBanco(true);
+          await limparBancoDados(!apenasRequisicoes);
+          enviarNotificacao(
+            'Banco Limpo',
+            apenasRequisicoes
+              ? 'Todas as requisições foram removidas com sucesso.'
+              : 'O banco de dados foi resetado para os valores padrão.',
+            'sucesso'
+          );
+        } catch (err: any) {
+          console.error(err);
+          enviarNotificacao('Erro', 'Não foi possível limpar o banco: ' + (err?.message || err), 'erro');
+        } finally {
+          setLimpandoBanco(false);
+        }
       },
     });
   };
@@ -311,6 +344,55 @@ export function Configuracoes() {
               </div>
             );
           })}
+        </div>
+      </div>
+
+      {/* Zona de Manutenção / Limpeza do Banco de Dados */}
+      <div
+        className="card mt-4"
+        style={{
+          border: '1px solid rgba(244, 63, 94, 0.3)',
+          background: 'rgba(244, 63, 94, 0.02)',
+        }}
+      >
+        <div className="section-title mb-2 text-rose flex items-center gap-2 font-bold">
+          <AlertTriangle size={18} /> Zona de Manutenção do Banco de Dados
+        </div>
+        <p className="text-sm text-muted mb-4">
+          Utilize essas ações para limpar dados de teste ou reiniciar o sistema. Os dados são removidos do Firebase em tempo real para todos os dispositivos.
+        </p>
+
+        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+          <button
+            id="btn-limpar-requisicoes"
+            type="button"
+            className="btn btn-ghost text-rose"
+            style={{
+              border: '1px solid rgba(244, 63, 94, 0.4)',
+              background: 'rgba(244, 63, 94, 0.08)',
+            }}
+            onClick={() => handleLimparBanco(true)}
+            disabled={limpandoBanco}
+          >
+            {limpandoBanco ? <RefreshCw size={15} className="spin" /> : <Trash2 size={15} />}
+            <span>Limpar Pedidos e Histórico</span>
+          </button>
+
+          <button
+            id="btn-zerar-banco"
+            type="button"
+            className="btn btn-ghost"
+            style={{
+              border: '1px solid rgba(245, 158, 11, 0.4)',
+              background: 'rgba(245, 158, 11, 0.08)',
+              color: 'var(--clr-amber)',
+            }}
+            onClick={() => handleLimparBanco(false)}
+            disabled={limpandoBanco}
+          >
+            {limpandoBanco ? <RefreshCw size={15} className="spin" /> : <Database size={15} />}
+            <span>Zerar Banco Completo (Pedidos + Equipe)</span>
+          </button>
         </div>
       </div>
     </main>
