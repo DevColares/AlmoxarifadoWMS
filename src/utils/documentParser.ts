@@ -284,184 +284,137 @@ export function analisarTextoRequisicao(texto: string, nomeArquivo: string): Dad
   const itens: ItemRequisicao[] = [];
   const linhasTexto = texto.split(/[\r\n]+/);
 
-    // Pré-filtra e limpa cada linha
-    const linhas: string[] = [];
-    for (const rawL of linhasTexto) {
-      const l = normalizarRuidoOCR(rawL);
-      if (!l) continue;
-        // Ignora cabeçalhos, rodapés e metadados
-        if (/^(?:Loca[cç][õo]es|C[oó]d\.?\s*Pe[cç]a|Registros|Observa[cç][aã]o|Separado por|Conferido por|Notas Fiscais|Ficha de Separa|Atendimento|Cliente|Data|Filial|Vendedor|E-mail|PIX|S[eé]rie)/i.test(l)) {
-          continue;
-        }
-        linhas.push(l);
-      }
+  // Pré-filtra e limpa cada linha
+  const linhas: string[] = [];
+  for (const rawL of linhasTexto) {
+    const l = normalizarRuidoOCR(rawL);
+    if (!l) continue;
+    // Ignora estritamente cabeçalhos, rodapés e linhas de metadados
+    if (/^(?:Loca[cç][õo]es|C[oó]d\.?\s*Pe[cç]a|Registros|Observa[cç][aã]o|Separado|Conferido|Notas Fiscais|Ficha de Separa|Atendimento|Cliente|Data|Filial|Vendedor|E-mail|Email|PIX|S[eé]rie|A PRAZO|FAVOR COLOCAR|\d{3,5}\s*-\s*VENDA)/i.test(l)) {
+      continue;
+    }
+    // Ignora linhas de cabeçalho da empresa (ex: DCCO NORTE, VENDA NFE)
+    if (/(?:VENDA NFE|NOROESTE|AMAZONIA|SOLUCOES EM ENER)/i.test(l)) {
+      continue;
+    }
+    linhas.push(l);
+  }
 
-      // Regex para Locação:
-      // Ex: "21A01", "26A010", "A-01-02", "BOX-01", "01A02", etc.
-      const regexLocacao = /\b([0-9]{1,3}[A-Z][0-9]{1,4}|[A-Z]-\d{1,2}-\d{1,2}|[A-Z]\d{1,2}-\d{1,2}|[A-Z]{1,4}-\d{1,3}|[A-Z][0-9]{2,3})\b/i;
+  // Regex para Locação: ex: "06F01", "14A02", "14E01", "15A04", "16E02", "16F02", "26D01", "21A01"
+  const regexLocacao = /\b([0-9]{1,3}[A-Z][0-9]{1,4}|[A-Z]-\d{1,2}-\d{1,2}|[A-Z]\d{1,2}-\d{1,2})\b/i;
 
-      for (let i = 0; i < linhas.length; i++) {
-        const l = linhas[i];
+    for (let i = 0; i < linhas.length; i++) {
+      const l = linhas[i];
 
-        // Verifica se a linha inicia ou contém um padrão de locação
+      // Ignora linhas de ruído numérico curto
+      if (/^[\d\s\-_]+$/.test(l) && l.length < 8) continue;
+
         const matchLoc = l.match(regexLocacao);
 
-          if (matchLoc && matchLoc.index !== undefined) {
-            const locacao = matchLoc[1].toUpperCase();
+        if (matchLoc && matchLoc.index !== undefined) {
+          const locacao = matchLoc[1].toUpperCase();
 
-            // Pega o conteúdo a partir e após a locação
-            const indiceLoc = matchLoc.index;
-            // Parte restante da linha (preferencialmente após a locação)
-            const aposLoc = l.substring(indiceLoc + matchLoc[0].length).trim();
-            const antesLoc = l.substring(0, indiceLoc).trim();
-            const restoLinha = aposLoc.length > 0 ? aposLoc : antesLoc;
+          // Conteúdo após e antes da locação
+          const indiceLoc = matchLoc.index;
+          const aposLoc = l.substring(indiceLoc + matchLoc[0].length).trim();
+          const antesLoc = l.substring(0, indiceLoc).trim();
+          const conteudoLinha = aposLoc.length > 0 ? aposLoc : antesLoc;
 
-            // Padrão específico da Ficha: [Cód.Peça] [Qtde] [Descrição...]
-            // Exemplo: "LF670I 24 FILTRO DE OLEO LUBRIFICANTE"
-            const matchSequencial = restoLinha.match(/^([A-Z0-9\-\/]{4,18})\s+(\d+(?:[.,]\d+)?(?:\s*(?:un|und|pc|pça|cx|kg|m))?)\s*(.*)$/i);
+          // Padrão estruturado: [Cód.Peça] [Qtde] [Descrição...]
+          // Exemplo: "3058383 2 CORREIA V8383"
+          const matchEstruturado = conteudoLinha.match(/^([A-Z0-9\-\/]{4,18})\s+(\d+)\s+(.+)$/i);
 
-              let codigo = '';
-              let quantidade = '1 und';
-              let descricao = '';
+            let codigo = '';
+            let quantidade = '1 und';
+            let descricao = '';
 
-              if (matchSequencial) {
-                codigo = matchSequencial[1].toUpperCase();
-                const rawQtd = matchSequencial[2].trim();
-                quantidade = /[a-zA-Z]/.test(rawQtd) ? rawQtd : `${rawQtd} und`;
-                descricao = matchSequencial[3].trim();
+              if (matchEstruturado) {
+                codigo = matchEstruturado[1].toUpperCase();
+                quantidade = `${matchEstruturado[2].trim()} und`;
+                descricao = matchEstruturado[3].trim();
               } else {
-                // Se a ordem não estiver estritamente sequencial, analisa tokens
-                const tokens = (restoLinha + ' ' + (aposLoc.length > 0 ? antesLoc : '')).trim().split(/\s+/).filter(Boolean);
-
-                  if (tokens.length >= 2) {
-                    // 1º token costuma ser o Cód. Peça
-                    let codIdx = -1;
-                    for (let t = 0; t < tokens.length; t++) {
-                      if (/^[A-Z0-9\-\/]{4,18}$/i.test(tokens[t]) && !/^\d{1,3}$/.test(tokens[t]) && !/^(?:UND|UN|PC|CX|KG|M)$/i.test(tokens[t])) {
-                        codIdx = t;
-                        break;
-                      }
-                    }
-                    if (codIdx === -1) codIdx = 0;
-                    codigo = tokens[codIdx].toUpperCase();
-
-                        // 2º elemento costuma ser a Quantidade
-                        let qtdIdx = -1;
-                        for (let t = 0; t < tokens.length; t++) {
-                          if (t !== codIdx && /^\d+(?:[.,]\d+)?(?:\s*(?:un|und|pc|pça|cx|kg|m))?$/i.test(tokens[t])) {
-                            qtdIdx = t;
-                            break;
-                          }
-                        }
-
-                          if (qtdIdx !== -1) {
-                            const rawQtd = tokens[qtdIdx];
-                            quantidade = /[a-zA-Z]/.test(rawQtd) ? rawQtd : `${rawQtd} und`;
-                          }
-
-                          const indicesUsados = new Set([codIdx, qtdIdx]);
-                          descricao = tokens.filter((_, idx) => !indicesUsados.has(idx)).join(' ').trim();
-                        }
-                      }
-
-                      // Suporte para descrição que quebrou em 2 linhas (ex: "FILTRO DE OLEO LUBRIFICANTE" e na linha seguinte "CS192077")
-                      if (i + 1 < linhas.length) {
-                        const proxLinha = linhas[i + 1].trim();
-                        // Se a próxima linha NÃO tem uma nova locação e não é cabeçalho/observação, pertence à descrição do item atual
-                        if (!proxLinha.match(regexLocacao) && !/^(?:Registros|Observa[cç][aã]o|Separado|Conferido)/i.test(proxLinha)) {
-                          descricao = (descricao ? `${descricao} ` : '') + proxLinha;
-                          i++; // avança para não processar a linha complementar como item separado
-                        }
-                      }
-
-                      // Limpeza de rodapés eventuais na descrição
-                      descricao = descricao.replace(/\b(?:Registros|Observa[cç][aã]o|Separado|Conferido).*/i, '').trim();
-
-                      if (!descricao || descricao.length < 2) {
-                        descricao = `Material ${codigo || locacao}`;
-                      }
-
-                      if (codigo) {
-                        // Evita duplicatas idênticas
-                        if (!itens.some(it => it.codigo === codigo && it.localizacao === locacao)) {
-                          itens.push({
-                            codigo,
-                            nome: descricao,
-                            localizacao: locacao,
-                            quantidade,
-                            separado: false,
-                          });
-                          continue;
-                        }
-                      }
-                    }
-
-                    // Fallback genérico caso a linha não tenha o padrão exato de início de locação
-                    const matchCod = l.match(/\b([A-Z]{2,5}-\d{3,6}|[A-Z]{2}\d{4,6}[A-Z]?|\d{5,8})\b/i);
-                    const matchQtd = l.match(/\b(\d+(?:[.,]\d+)?\s*(?:unidades?|pe[cç]as?|metros?|un|und|p[cç]|cx|kg|pct|m)?)\b/i);
-
-                    if (matchCod && (matchLoc || matchQtd) && l.length > 6) {
-                      const codigo = matchCod[1].toUpperCase();
-                      const localizacao = matchLoc ? matchLoc[1].toUpperCase() : 'A-01-01';
-                      let quantidade = matchQtd ? matchQtd[1] : '1 und';
-                      if (!/[a-zA-Z]/.test(quantidade)) {
-                        quantidade = `${quantidade.trim()} und`;
-                      }
-
-                      let nome = l
-                        .replace(matchCod[0], '')
-                        .replace(matchLoc ? matchLoc[0] : '', '')
-                        .replace(matchQtd ? matchQtd[0] : '', '')
-                        .replace(/^[\s\-_.:;]+|[\s\-_.:;]+$/g, '')
-                        .trim();
-
-                      if (nome.length < 3) {
-                        nome = `Material ${codigo}`;
-                      }
-
-                      if (!itens.some(it => it.codigo === codigo && it.localizacao === localizacao)) {
-                        itens.push({
-                          codigo,
-                          nome,
-                          localizacao,
-                          quantidade,
-                          separado: false,
-                        });
-                      }
+                const tokens = conteudoLinha.split(/\s+/).filter(Boolean);
+                if (tokens.length >= 2) {
+                  codigo = tokens[0].toUpperCase();
+                  if (/^\d+$/.test(tokens[1])) {
+                    quantidade = `${tokens[1]} und`;
+                    descricao = tokens.slice(2).join(' ').trim();
+                  } else {
+                    let qIdx = tokens.findIndex((t, idx) => idx > 0 && /^\d+$/.test(t));
+                    if (qIdx !== -1) {
+                      quantidade = `${tokens[qIdx]} und`;
+                      descricao = tokens.filter((_, idx) => idx !== 0 && idx !== qIdx).join(' ').trim();
+                    } else {
+                      descricao = tokens.slice(1).join(' ').trim();
                     }
                   }
-
-                  // Fallback se não conseguiu quebrar por linhas (ex: OCR tudo em 1 linha contínua)
-                  if (itens.length === 0) {
-                    const regexSeq = /([0-9]{1,3}[A-Z][0-9]{2,3}|[A-Z]-\d{2}-\d{2})\s+([A-Z0-9\-\/]{4,15})\s+(\d+)\s+([A-Z\s0-9]{4,50}?)(?=[0-9]{1,3}[A-Z][0-9]{2,3}|Registros|Observa|$)/gi;
-                    let seqMatch;
-                    while ((seqMatch = regexSeq.exec(texto)) !== null) {
-                      const q = seqMatch[3].trim();
-                      itens.push({
-                        localizacao: seqMatch[1].toUpperCase(),
-                        codigo: seqMatch[2].toUpperCase(),
-                        quantidade: `${q} und`,
-                        nome: seqMatch[4].trim(),
-                        separado: false,
-                      });
-                    }
-                  }
-
-                  // Se mesmo assim nenhum item foi parseado, cria 1 item genérico com o nome do arquivo
-                  if (itens.length === 0) {
-                    itens.push({
-                      codigo: 'MAT-001',
-                      nome: 'Material importado (' + nomeArquivo + ')',
-                      localizacao: 'A-01-01',
-                      quantidade: '1 und',
-                      separado: false,
-                    });
-                  }
-
-                  return {
-                    numero_nota,
-                    solicitante,
-                    itens,
-                    textoBruto: texto,
-                  };
                 }
+              }
+
+              // Suporte para descrição em múltiplas linhas (continuação na linha seguinte)
+              while (i + 1 < linhas.length) {
+                const proxLinha = linhas[i + 1].trim();
+                if (!proxLinha.match(regexLocacao) &&
+                  !/^(?:Registros|Observa[cç][aã]o|Separado|Conferido|Data|Cliente|Filial|Vendedor)/i.test(proxLinha) &&
+                  !/^(?:FAVOR COLOCAR|\d+\s*$)/i.test(proxLinha)) {
+                  descricao = (descricao ? `${descricao} ` : '') + proxLinha;
+                  i++;
+                } else {
+                  break;
+                }
+              }
+
+              descricao = descricao.replace(/\b(?:Registros|Observa[cç][aã]o|Separado|Conferido).*/i, '').trim();
+
+          if (!descricao || descricao.length < 2) {
+            descricao = `Material ${codigo}`;
+          }
+
+          if (codigo && locacao) {
+            if (!itens.some(it => it.codigo === codigo && it.localizacao === locacao)) {
+              itens.push({
+                codigo,
+                nome: descricao,
+                localizacao,
+                quantidade,
+                separado: false,
+              });
+            }
+          }
+        }
+      }
+
+      // Fallback se não conseguiu quebrar por linhas (ex: OCR tudo em 1 linha contínua)
+      if (itens.length === 0) {
+        const regexSeq = /([0-9]{1,3}[A-Z][0-9]{2,3}|[A-Z]-\d{2}-\d{2})\s+([A-Z0-9\-\/]{4,15})\s+(\d+)\s+([A-Z\s0-9]{4,50}?)(?=[0-9]{1,3}[A-Z][0-9]{2,3}|Registros|Observa|$)/gi;
+        let seqMatch;
+        while ((seqMatch = regexSeq.exec(texto)) !== null) {
+          const q = seqMatch[3].trim();
+          itens.push({
+            localizacao: seqMatch[1].toUpperCase(),
+            codigo: seqMatch[2].toUpperCase(),
+            quantidade: `${q} und`,
+            nome: seqMatch[4].trim(),
+            separado: false,
+          });
+        }
+      }
+
+      // Se mesmo assim nenhum item foi parseado, cria 1 item genérico com o nome do arquivo
+      if (itens.length === 0) {
+        itens.push({
+          codigo: 'MAT-001',
+          nome: 'Material importado (' + nomeArquivo + ')',
+          localizacao: 'A-01-01',
+          quantidade: '1 und',
+          separado: false,
+        });
+      }
+
+return {
+  numero_nota,
+  solicitante,
+  itens,
+  textoBruto: texto,
+};
+}
