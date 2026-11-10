@@ -176,6 +176,9 @@ Regras obrigatórias:
     textoBruto: rawText,
   };
 }
+
+/**
+ * Pré-processa uma imagem para otimizar a legibilidade pelo OCR:
  * - Redimensiona se for muito pequena
  * - Converte para tons de cinza
  * - Aplica filtro de alto contraste e binarização seletiva
