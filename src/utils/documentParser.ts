@@ -126,55 +126,67 @@ Regras obrigatórias:
 4. Não invente itens do cabeçalho como 'VENDA NFE' ou vendedor.
 5. Retorne APENAS o JSON puro, sem crases de markdown e sem explicações adicionais.`;
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+  // Modelos suportados na API Gemini com fallback automático
+  const modelos = ['gemini-1.5-flash-latest', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro-vision'];
+  let ultimoErro = '';
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [
-        {
-          parts: [
-            { text: prompt },
+  for (const modelo of modelos) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent?key=${apiKey}`;
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
             {
-              inline_data: {
-                mime_type: mimeType,
-                data: base64,
-              },
+              parts: [
+                { text: prompt },
+                {
+                  inline_data: {
+                    mime_type: mimeType,
+                    data: base64,
+                  },
+                },
+              ],
             },
           ],
-        },
-      ],
-      generationConfig: {
-        response_mime_type: 'application/json',
-        temperature: 0.1,
-      },
-    }),
-  });
+          generationConfig: {
+            response_mime_type: 'application/json',
+            temperature: 0.1,
+          },
+        }),
+      });
 
-  if (!response.ok) {
-    const errData = await response.json().catch(() => ({}));
-    throw new Error(errData?.error?.message || `Erro na API Gemini (${response.status})`);
+      if (response.ok) {
+        const data = await response.json();
+        const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+        const parsed = JSON.parse(rawText);
+
+        const itensFormatados: ItemRequisicao[] = (parsed.itens || []).map((it: any) => ({
+          codigo: String(it.codigo || 'MAT-001').trim(),
+          nome: String(it.nome || 'Material').trim(),
+          localizacao: String(it.localizacao || 'A-01-01').trim(),
+          quantidade: String(it.quantidade || '1 und').includes('und') ? String(it.quantidade) : `${it.quantidade} und`,
+          separado: false,
+        }));
+
+        return {
+          numero_nota: String(parsed.numero_nota || `FICHA-${Date.now().toString().slice(-5)}`),
+          solicitante: String(parsed.solicitante || 'Cliente não identificado'),
+          itens: itensFormatados,
+          textoBruto: rawText,
+        };
+      } else {
+        const errData = await response.json().catch(() => ({}));
+        ultimoErro = errData?.error?.message || `Erro ${response.status} no modelo ${modelo}`;
+      }
+    } catch (e: any) {
+      ultimoErro = e?.message || 'Falha na conexão com a API Gemini';
+    }
   }
 
-  const data = await response.json();
-  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-  const parsed = JSON.parse(rawText);
-
-  const itensFormatados: ItemRequisicao[] = (parsed.itens || []).map((it: any) => ({
-    codigo: String(it.codigo || 'MAT-001').trim(),
-    nome: String(it.nome || 'Material').trim(),
-    localizacao: String(it.localizacao || 'A-01-01').trim(),
-    quantidade: String(it.quantidade || '1 und').includes('und') ? String(it.quantidade) : `${it.quantidade} und`,
-    separado: false,
-  }));
-
-  return {
-    numero_nota: String(parsed.numero_nota || `FICHA-${Date.now().toString().slice(-5)}`),
-    solicitante: String(parsed.solicitante || 'Cliente não identificado'),
-    itens: itensFormatados,
-    textoBruto: rawText,
-  };
+  throw new Error(ultimoErro || 'Não foi possível comunicar com a API do Gemini');
 }
 
 /**
