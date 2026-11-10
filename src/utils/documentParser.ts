@@ -375,10 +375,10 @@ export function analisarTextoRequisicao(texto: string, nomeArquivo: string): Dad
       if (codigo && locacao) {
         if (!itens.some((it) => it.codigo === codigo && it.localizacao === locacao)) {
           itens.push({
-            codigo,
+            codigo: codigo,
             nome: descricao,
-            localizacao,
-            quantidade,
+            localizacao: String(locacao),
+            quantidade: quantidade,
             separado: false,
           });
         }
