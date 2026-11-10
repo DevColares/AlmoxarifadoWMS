@@ -303,86 +303,88 @@ export function analisarTextoRequisicao(texto: string, nomeArquivo: string): Dad
   // Regex para Locação: ex: "06F01", "14A02", "14E01", "15A04", "16E02", "16F02", "26D01", "21A01"
   const regexLocacao = /\b([0-9]{1,3}[A-Z][0-9]{1,4}|[A-Z]-\d{1,2}-\d{1,2}|[A-Z]\d{1,2}-\d{1,2})\b/i;
 
-    for (let i = 0; i < linhas.length; i++) {
-      const l = linhas[i];
+  for (let i = 0; i < linhas.length; i++) {
+    const l = linhas[i];
 
-      // Ignora linhas de ruído numérico curto
-      if (/^[\d\s\-_]+$/.test(l) && l.length < 8) continue;
+    // Ignora linhas de ruído numérico curto
+    if (/^[\d\s\-_]+$/.test(l) && l.length < 8) continue;
 
-        const matchLoc = l.match(regexLocacao);
+    const matchLoc = l.match(regexLocacao);
 
-        if (matchLoc && matchLoc.index !== undefined) {
-          const locacao = matchLoc[1].toUpperCase();
+    if (matchLoc && matchLoc.index !== undefined) {
+      const locacao = matchLoc[1].toUpperCase();
 
-          // Conteúdo após e antes da locação
-          const indiceLoc = matchLoc.index;
-          const aposLoc = l.substring(indiceLoc + matchLoc[0].length).trim();
-          const antesLoc = l.substring(0, indiceLoc).trim();
-          const conteudoLinha = aposLoc.length > 0 ? aposLoc : antesLoc;
+      // Conteúdo após e antes da locação
+      const indiceLoc = matchLoc.index;
+      const aposLoc = l.substring(indiceLoc + matchLoc[0].length).trim();
+      const antesLoc = l.substring(0, indiceLoc).trim();
+      const conteudoLinha = aposLoc.length > 0 ? aposLoc : antesLoc;
 
-          // Padrão estruturado: [Cód.Peça] [Qtde] [Descrição...]
-          // Exemplo: "3058383 2 CORREIA V8383"
-          const matchEstruturado = conteudoLinha.match(/^([A-Z0-9\-\/]{4,18})\s+(\d+)\s+(.+)$/i);
+      // Padrão estruturado: [Cód.Peça] [Qtde] [Descrição...]
+      // Exemplo: "3058383 2 CORREIA V8383"
+      const matchEstruturado = conteudoLinha.match(/^([A-Z0-9\-\/]{4,18})\s+(\d+)\s+(.+)$/i);
 
-            let codigo = '';
-            let quantidade = '1 und';
-            let descricao = '';
+      let codigo = '';
+      let quantidade = '1 und';
+      let descricao = '';
 
-              if (matchEstruturado) {
-                codigo = matchEstruturado[1].toUpperCase();
-                quantidade = `${matchEstruturado[2].trim()} und`;
-                descricao = matchEstruturado[3].trim();
-              } else {
-                const tokens = conteudoLinha.split(/\s+/).filter(Boolean);
-                if (tokens.length >= 2) {
-                  codigo = tokens[0].toUpperCase();
-                  if (/^\d+$/.test(tokens[1])) {
-                    quantidade = `${tokens[1]} und`;
-                    descricao = tokens.slice(2).join(' ').trim();
-                  } else {
-                    let qIdx = tokens.findIndex((t, idx) => idx > 0 && /^\d+$/.test(t));
-                    if (qIdx !== -1) {
-                      quantidade = `${tokens[qIdx]} und`;
-                      descricao = tokens.filter((_, idx) => idx !== 0 && idx !== qIdx).join(' ').trim();
-                    } else {
-                      descricao = tokens.slice(1).join(' ').trim();
-                    }
-                  }
-                }
-              }
-
-              // Suporte para descrição em múltiplas linhas (continuação na linha seguinte)
-              while (i + 1 < linhas.length) {
-                const proxLinha = linhas[i + 1].trim();
-                if (!proxLinha.match(regexLocacao) &&
-                  !/^(?:Registros|Observa[cç][aã]o|Separado|Conferido|Data|Cliente|Filial|Vendedor)/i.test(proxLinha) &&
-                  !/^(?:FAVOR COLOCAR|\d+\s*$)/i.test(proxLinha)) {
-                  descricao = (descricao ? `${descricao} ` : '') + proxLinha;
-                  i++;
-                } else {
-                  break;
-                }
-              }
-
-              descricao = descricao.replace(/\b(?:Registros|Observa[cç][aã]o|Separado|Conferido).*/i, '').trim();
-
-          if (!descricao || descricao.length < 2) {
-            descricao = `Material ${codigo}`;
-          }
-
-          if (codigo && locacao) {
-            if (!itens.some(it => it.codigo === codigo && it.localizacao === locacao)) {
-              itens.push({
-                codigo,
-                nome: descricao,
-                localizacao,
-                quantidade,
-                separado: false,
-              });
+      if (matchEstruturado) {
+        codigo = matchEstruturado[1].toUpperCase();
+        quantidade = `${matchEstruturado[2].trim()} und`;
+        descricao = matchEstruturado[3].trim();
+      } else {
+        const tokens = conteudoLinha.split(/\s+/).filter(Boolean);
+        if (tokens.length >= 2) {
+          codigo = tokens[0].toUpperCase();
+          if (/^\d+$/.test(tokens[1])) {
+            quantidade = `${tokens[1]} und`;
+            descricao = tokens.slice(2).join(' ').trim();
+          } else {
+            const qIdx = tokens.findIndex((t, idx) => idx > 0 && /^\d+$/.test(t));
+            if (qIdx !== -1) {
+              quantidade = `${tokens[qIdx]} und`;
+              descricao = tokens.filter((_, idx) => idx !== 0 && idx !== qIdx).join(' ').trim();
+            } else {
+              descricao = tokens.slice(1).join(' ').trim();
             }
           }
         }
       }
+
+      // Suporte para descrição em múltiplas linhas (continuação na linha seguinte)
+      while (i + 1 < linhas.length) {
+        const proxLinha = linhas[i + 1].trim();
+        if (
+          !proxLinha.match(regexLocacao) &&
+          !/^(?:Registros|Observa[cç][aã]o|Separado|Conferido|Data|Cliente|Filial|Vendedor)/i.test(proxLinha) &&
+          !/^(?:FAVOR COLOCAR|\d+\s*$)/i.test(proxLinha)
+        ) {
+          descricao = (descricao ? `${descricao} ` : '') + proxLinha;
+          i++;
+        } else {
+          break;
+        }
+      }
+
+      descricao = descricao.replace(/\b(?:Registros|Observa[cç][aã]o|Separado|Conferido).*/i, '').trim();
+
+      if (!descricao || descricao.length < 2) {
+        descricao = `Material ${codigo}`;
+      }
+
+      if (codigo && locacao) {
+        if (!itens.some((it) => it.codigo === codigo && it.localizacao === locacao)) {
+          itens.push({
+            codigo,
+            nome: descricao,
+            localizacao,
+            quantidade,
+            separado: false,
+          });
+        }
+      }
+    }
+  }
 
       // Fallback se não conseguiu quebrar por linhas (ex: OCR tudo em 1 linha contínua)
       if (itens.length === 0) {
