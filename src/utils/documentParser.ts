@@ -126,63 +126,102 @@ Regras obrigatórias:
 4. Não invente itens do cabeçalho como 'VENDA NFE' ou vendedor.
 5. Retorne APENAS o JSON puro, sem crases de markdown e sem explicações adicionais.`;
 
-  // Modelos suportados na API Gemini com fallback automático
-  const modelos = ['gemini-1.5-flash-latest', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro-vision'];
+  // 1. Consulta dinâmica da lista de modelos disponíveis para a chave do usuário
+  let modelosDisponiveis: string[] = [];
+  try {
+    const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+    if (listRes.ok) {
+      const listData = await listRes.json();
+      const todosModelos = (listData?.models || []) as Array<{ name: string; supportedGenerationMethods?: string[] }>;
+      modelosDisponiveis = todosModelos
+        .filter((m) => m.supportedGenerationMethods?.includes('generateContent'))
+        .map((m) => m.name.replace(/^models\//, ''));
+    }
+  } catch {
+    // Se a listagem falhar, segue com a lista manual
+  }
+
+  // Lista ampla com todos os modelos multimodais de visão conhecidos
+  const modelosPrioritarios = [
+    'gemini-1.5-flash-latest',
+    'gemini-1.5-flash',
+    'gemini-1.5-flash-001',
+    'gemini-1.5-flash-002',
+    'gemini-1.5-flash-8b',
+    'gemini-1.5-flash-8b-latest',
+    'gemini-1.5-pro-latest',
+    'gemini-1.5-pro',
+    'gemini-1.5-pro-001',
+    'gemini-1.5-pro-002',
+    'gemini-2.0-flash-exp',
+    'gemini-2.0-flash',
+    'gemini-exp-1206',
+    'gemini-1.0-pro-vision-latest',
+  ];
+
+  // Junta os modelos descobertos dinamicamente com a lista prioritária sem duplicatas
+  const modelos = Array.from(new Set([...modelosDisponiveis, ...modelosPrioritarios]));
   let ultimoErro = '';
 
   for (const modelo of modelos) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent?key=${apiKey}`;
+    // Tenta primeiro em v1beta e se não existir tenta em v1
+    for (const apiVersion of ['v1beta', 'v1']) {
+      const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${modelo}:generateContent?key=${apiKey}`;
 
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                { text: prompt },
-                {
-                  inline_data: {
-                    mime_type: mimeType,
-                    data: base64,
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  { text: prompt },
+                  {
+                    inline_data: {
+                      mime_type: mimeType,
+                      data: base64,
+                    },
                   },
-                },
-              ],
+                ],
+              },
+            ],
+            generationConfig: {
+              temperature: 0.1,
             },
-          ],
-          generationConfig: {
-            response_mime_type: 'application/json',
-            temperature: 0.1,
-          },
-        }),
-      });
+          }),
+        });
 
-      if (response.ok) {
-        const data = await response.json();
-        const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-        const parsed = JSON.parse(rawText);
+        if (response.ok) {
+          const data = await response.json();
+          let rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
 
-        const itensFormatados: ItemRequisicao[] = (parsed.itens || []).map((it: any) => ({
-          codigo: String(it.codigo || 'MAT-001').trim(),
-          nome: String(it.nome || 'Material').trim(),
-          localizacao: String(it.localizacao || 'A-01-01').trim(),
-          quantidade: String(it.quantidade || '1 und').includes('und') ? String(it.quantidade) : `${it.quantidade} und`,
-          separado: false,
-        }));
+          // Limpa possíveis blocos de formatação markdown ```json ... ```
+          rawText = rawText.replace(/```json\s*/gi, '').replace(/```\s*$/g, '').trim();
 
-        return {
-          numero_nota: String(parsed.numero_nota || `FICHA-${Date.now().toString().slice(-5)}`),
-          solicitante: String(parsed.solicitante || 'Cliente não identificado'),
-          itens: itensFormatados,
-          textoBruto: rawText,
-        };
-      } else {
-        const errData = await response.json().catch(() => ({}));
-        ultimoErro = errData?.error?.message || `Erro ${response.status} no modelo ${modelo}`;
+          const parsed = JSON.parse(rawText);
+
+          const itensFormatados: ItemRequisicao[] = (parsed.itens || []).map((it: any) => ({
+            codigo: String(it.codigo || 'MAT-001').trim(),
+            nome: String(it.nome || 'Material').trim(),
+            localizacao: String(it.localizacao || 'A-01-01').trim(),
+            quantidade: String(it.quantidade || '1 und').includes('und') ? String(it.quantidade) : `${it.quantidade} und`,
+            separado: false,
+          }));
+
+          return {
+            numero_nota: String(parsed.numero_nota || `FICHA-${Date.now().toString().slice(-5)}`),
+            solicitante: String(parsed.solicitante || 'Cliente não identificado'),
+            itens: itensFormatados,
+            textoBruto: rawText,
+          };
+        } else {
+          const errData = await response.json().catch(() => ({}));
+          ultimoErro = errData?.error?.message || `Erro ${response.status} no modelo ${modelo} (${apiVersion})`;
+        }
+      } catch (e: any) {
+        ultimoErro = e?.message || 'Falha na conexão com a API Gemini';
       }
-    } catch (e: any) {
-      ultimoErro = e?.message || 'Falha na conexão com a API Gemini';
     }
   }
 
