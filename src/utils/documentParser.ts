@@ -99,7 +99,8 @@ async function fileParaBase64(file: File): Promise<{ base64: string; mimeType: s
  */
 export async function extrairComGeminiVision(
   file: File,
-  apiKey: string
+  apiKey: string,
+  onStatus?: (msg: string) => void
 ): Promise<DadosRequisicaoExtraidos> {
   const { base64, mimeType } = await fileParaBase64(file);
 
@@ -126,9 +127,13 @@ Regras obrigatórias:
 4. Não invente itens do cabeçalho como 'VENDA NFE' ou vendedor.
 5. Retorne APENAS o JSON puro, sem crases de markdown e sem explicações adicionais.`;
 
-  // 1. Consulta dinâmica da lista de modelos disponíveis para a chave do usuário
+  // 1. Tenta usar o modelo que já teve sucesso anteriormente
+  const modeloSalvo = localStorage.getItem('GEMINI_MODELO_ATIVO');
+
+  // 2. Consulta dinâmica da lista de modelos disponíveis para a chave do usuário
   let modelosDisponiveis: string[] = [];
   try {
+    onStatus?.('Consultando modelos disponíveis na sua conta...');
     const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
     if (listRes.ok) {
       const listData = await listRes.json();
@@ -149,21 +154,23 @@ Regras obrigatórias:
     'gemini-1.5-flash-002',
     'gemini-1.5-flash-8b',
     'gemini-1.5-flash-8b-latest',
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-exp',
     'gemini-1.5-pro-latest',
     'gemini-1.5-pro',
-    'gemini-1.5-pro-001',
-    'gemini-1.5-pro-002',
-    'gemini-2.0-flash-exp',
-    'gemini-2.0-flash',
-    'gemini-exp-1206',
-    'gemini-1.0-pro-vision-latest',
   ];
 
-  // Junta os modelos descobertos dinamicamente com a lista prioritária sem duplicatas
-  const modelos = Array.from(new Set([...modelosDisponiveis, ...modelosPrioritarios]));
+  // Coloca o modelo salvo em cache em primeiro lugar absoluto
+  const lista = modeloSalvo
+    ? [modeloSalvo, ...modelosDisponiveis, ...modelosPrioritarios]
+    : [...modelosDisponiveis, ...modelosPrioritarios];
+
+  const modelos = Array.from(new Set(lista.filter(Boolean)));
   let ultimoErro = '';
 
   for (const modelo of modelos) {
+    onStatus?.(`Processando imagem com modelo: ${modelo}...`);
+
     // Tenta primeiro em v1beta e se não existir tenta em v1
     for (const apiVersion of ['v1beta', 'v1']) {
       const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${modelo}:generateContent?key=${apiKey}`;
@@ -208,6 +215,10 @@ Regras obrigatórias:
             quantidade: String(it.quantidade || '1 und').includes('und') ? String(it.quantidade) : `${it.quantidade} und`,
             separado: false,
           }));
+
+          // Salva no cache do navegador para nunca mais demorar nas próximas fotos
+          localStorage.setItem('GEMINI_MODELO_ATIVO', modelo);
+          onStatus?.(`Sucesso com o modelo ${modelo}!`);
 
           return {
             numero_nota: String(parsed.numero_nota || `FICHA-${Date.now().toString().slice(-5)}`),

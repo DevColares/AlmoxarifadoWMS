@@ -62,10 +62,13 @@ export function CriarRequisicao() {
       const geminiApiKey = localStorage.getItem('GEMINI_API_KEY') || import.meta.env.VITE_GEMINI_API_KEY;
 
       if (isImage && geminiApiKey) {
-        setMensagemProcessamento('Analisando ficha com IA Gemini Flash Vision...');
-        const parsed = await extrairComGeminiVision(file, geminiApiKey);
+        setMensagemProcessamento('Iniciando análise com Gemini Vision...');
+        const parsed = await extrairComGeminiVision(file, geminiApiKey, (status) => {
+          setMensagemProcessamento(status);
+        });
+        const modeloUsado = localStorage.getItem('GEMINI_MODELO_ATIVO') || 'Gemini Vision';
         setDadosExtraidos(parsed);
-        enviarNotificacao('✅ Extração Concluída!', `${parsed.itens.length} itens extraídos via IA com alta precisão.`, 'sucesso');
+        enviarNotificacao('✅ Extração Concluída!', `${parsed.itens.length} itens extraídos via ${modeloUsado}.`, 'sucesso');
         return;
       }
 
