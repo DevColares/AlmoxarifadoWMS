@@ -147,6 +147,10 @@ function normalizarRuidoOCR(str: string): string {
   return str
     .replace(/[|│]/g, ' ')
     .replace(/[“”"„]/g, '')
+    // Substitui O (letra O maiúscula) ou o minúsculo por 0 se estiver no padrão de locação (ex: 06F0l -> 06F01, O6F01 -> 06F01)
+    .replace(/\b[oO](\d[A-Z]\d{2})\b/g, '0$1')
+    .replace(/\b(\d{2}[A-Z]\d)[oO]\b/g, '$10')
+    .replace(/\b(\d{2}[A-Z]\d)[lI]\b/g, '$11')
     .trim();
 }
 
@@ -159,15 +163,30 @@ export async function extrairTextoDeImagem(
 ): Promise<string> {
   const worker = await createWorker('por');
   try {
-    // Configurações do Tesseract para reconhecimento de documentos tabulares
+    // Modo 4 (Assume a single column of text of variable sizes) ou Modo 6
+    // Para tabelas de notas fiscais, PSM 4 ou 11 preserva muito melhor a separação entre colunas
     await worker.setParameters({
-      tessedit_pageseg_mode: '6' as any, // Assume a single uniform block of text
+      tessedit_pageseg_mode: '4' as any,
       preserve_interword_spaces: '1',
     });
 
-    const imagemOtimizada = await preprocessarImagemParaOCR(file);
-    const ret = await worker.recognize(imagemOtimizada);
-    return ret.data.text;
+    // 1ª tentativa direta com a imagem original
+    const ret1 = await worker.recognize(file);
+    let texto1 = ret1.data.text || '';
+
+    // Se o texto tiver poucas linhas ou poucos itens, tenta com a imagem pré-processada em alto contraste
+    const contagemLocacoes = (texto1.match(/\b[0-9]{1,3}[A-Z][0-9]{1,4}\b/gi) || []).length;
+    if (contagemLocacoes < 5) {
+      const imagemOtimizada = await preprocessarImagemParaOCR(file);
+      const ret2 = await worker.recognize(imagemOtimizada);
+      const texto2 = ret2.data.text || '';
+      const contagemLocacoes2 = (texto2.match(/\b[0-9]{1,3}[A-Z][0-9]{1,4}\b/gi) || []).length;
+      if (contagemLocacoes2 > contagemLocacoes) {
+        return texto2;
+      }
+    }
+
+    return texto1;
   } finally {
     await worker.terminate();
   }
@@ -354,8 +373,17 @@ export function analisarTextoRequisicao(texto: string, nomeArquivo: string): Dad
       // Suporte para descrição em múltiplas linhas (continuação na linha seguinte)
       while (i + 1 < linhas.length) {
         const proxLinha = linhas[i + 1].trim();
+        // Não consome a linha se ela contiver uma locação válida (para não engolir o próximo item!)
+        if (proxLinha.match(regexLocacao)) {
+          break;
+        }
+
+        // Não consome se a linha começar com um código de peça seguido de número
+        if (/^[A-Z0-9\-\/]{4,18}\s+\d+/i.test(proxLinha)) {
+          break;
+        }
+
         if (
-          !proxLinha.match(regexLocacao) &&
           !/^(?:Registros|Observa[cç][aã]o|Separado|Conferido|Data|Cliente|Filial|Vendedor)/i.test(proxLinha) &&
           !/^(?:FAVOR COLOCAR|\d+\s*$)/i.test(proxLinha)
         ) {
@@ -386,37 +414,37 @@ export function analisarTextoRequisicao(texto: string, nomeArquivo: string): Dad
     }
   }
 
-      // Fallback se não conseguiu quebrar por linhas (ex: OCR tudo em 1 linha contínua)
-      if (itens.length === 0) {
-        const regexSeq = /([0-9]{1,3}[A-Z][0-9]{2,3}|[A-Z]-\d{2}-\d{2})\s+([A-Z0-9\-\/]{4,15})\s+(\d+)\s+([A-Z\s0-9]{4,50}?)(?=[0-9]{1,3}[A-Z][0-9]{2,3}|Registros|Observa|$)/gi;
-        let seqMatch;
-        while ((seqMatch = regexSeq.exec(texto)) !== null) {
-          const q = seqMatch[3].trim();
-          itens.push({
-            localizacao: seqMatch[1].toUpperCase(),
-            codigo: seqMatch[2].toUpperCase(),
-            quantidade: `${q} und`,
-            nome: seqMatch[4].trim(),
-            separado: false,
-          });
-        }
-      }
+  // Fallback se não conseguiu quebrar por linhas (ex: OCR tudo em 1 linha contínua)
+  if (itens.length === 0) {
+    const regexSeq = /([0-9]{1,3}[A-Z][0-9]{2,3}|[A-Z]-\d{2}-\d{2})\s+([A-Z0-9\-\/]{4,15})\s+(\d+)\s+([A-Z\s0-9]{4,50}?)(?=[0-9]{1,3}[A-Z][0-9]{2,3}|Registros|Observa|$)/gi;
+    let seqMatch;
+    while ((seqMatch = regexSeq.exec(texto)) !== null) {
+      const q = seqMatch[3].trim();
+      itens.push({
+        localizacao: seqMatch[1].toUpperCase(),
+        codigo: seqMatch[2].toUpperCase(),
+        quantidade: `${q} und`,
+        nome: seqMatch[4].trim(),
+        separado: false,
+      });
+    }
+  }
 
-      // Se mesmo assim nenhum item foi parseado, cria 1 item genérico com o nome do arquivo
-      if (itens.length === 0) {
-        itens.push({
-          codigo: 'MAT-001',
-          nome: 'Material importado (' + nomeArquivo + ')',
-          localizacao: 'A-01-01',
-          quantidade: '1 und',
-          separado: false,
-        });
-      }
+  // Se mesmo assim nenhum item foi parseado, cria 1 item genérico com o nome do arquivo
+  if (itens.length === 0) {
+    itens.push({
+      codigo: 'MAT-001',
+      nome: 'Material importado (' + nomeArquivo + ')',
+      localizacao: 'A-01-01',
+      quantidade: '1 und',
+      separado: false,
+    });
+  }
 
-return {
-  numero_nota,
-  solicitante,
-  itens,
-  textoBruto: texto,
-};
+  return {
+    numero_nota,
+    solicitante,
+    itens,
+    textoBruto: texto,
+  };
 }
