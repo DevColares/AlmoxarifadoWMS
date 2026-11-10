@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { criarRequisicao } from '../firebase/firestore';
-import { ItemRequisicao } from '../types';
+import { ItemRequisicao, TipoDocumento } from '../types';
 import {
   extrairTextoDoPdf,
   extrairTextoDeImagem,
@@ -142,6 +142,7 @@ export function CriarRequisicao() {
     try {
       await criarRequisicao({
         numero_nota: dadosExtraidos.numero_nota.trim(),
+        tipo_documento: dadosExtraidos.tipo_documento || 'NF',
         solicitante: dadosExtraidos.solicitante.trim() || 'Não informado',
         status: 'PENDENTE',
         criado_por: operadorAtivo.nome,
@@ -274,7 +275,24 @@ export function CriarRequisicao() {
 
           <div className="card mb-4">
             <div className="section-title"><Hash size={14} /> Dados Identificados no Documento</div>
-            <div className="grid col-2 gap-3">
+            <div className="grid col-3 gap-3">
+              <div className="form-group">
+                <label className="form-label" htmlFor="select-doc-tipo">Tipo de Documento</label>
+                <select
+                  id="select-doc-tipo"
+                  className="form-input font-bold"
+                  value={dadosExtraidos.tipo_documento || 'NF'}
+                  onChange={(e) => setDadosExtraidos({ ...dadosExtraidos, tipo_documento: e.target.value as TipoDocumento })}
+                  style={{
+                    color: (dadosExtraidos.tipo_documento === 'OS') ? '#f43f5e' : '#38bdf8',
+                    borderColor: (dadosExtraidos.tipo_documento === 'OS') ? 'rgba(244, 63, 94, 0.4)' : 'rgba(56, 189, 248, 0.4)',
+                    background: (dadosExtraidos.tipo_documento === 'OS') ? 'rgba(244, 63, 94, 0.08)' : 'rgba(56, 189, 248, 0.08)'
+                  }}
+                >
+                  <option value="NF">NF - Venda / Saída</option>
+                  <option value="OS">OS - Ordem de Serviço</option>
+                </select>
+              </div>
               <div className="form-group">
                 <label className="form-label" htmlFor="input-doc-numero-nota">Número da Ficha / Requisição</label>
                 <input
@@ -337,7 +355,7 @@ export function CriarRequisicao() {
                   </div>
 
                   <div>
-                    <label className="text-xs text-muted block mb-1 font-semibold">Cód. Peça (Destaque)</label>
+                    <label className="text-xs text-muted block mb-1 font-semibold">Cód. Peça / Ref.</label>
                     <input
                       type="text"
                       className="form-input font-mono font-bold"
@@ -352,6 +370,11 @@ export function CriarRequisicao() {
                       placeholder="FF5706I"
                       onChange={(e) => editarItem(idx, 'codigo', e.target.value)}
                     />
+                    {item.codigo.length >= 4 && (
+                      <div className="text-xs mt-1" style={{ fontSize: '0.72rem', color: 'var(--clr-muted)' }}>
+                        Final: <strong style={{ color: '#ec4899', fontSize: '0.85rem' }}>{item.codigo.slice(-4)}</strong>
+                      </div>
+                    )}
                   </div>
 
                   <div>

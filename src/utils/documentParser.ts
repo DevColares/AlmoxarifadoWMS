@@ -4,12 +4,13 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { createWorker } from 'tesseract.js';
-import { ItemRequisicao } from '../types';
+import { ItemRequisicao, TipoDocumento } from '../types';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 export interface DadosRequisicaoExtraidos {
   numero_nota: string;
+  tipo_documento: TipoDocumento;
   solicitante: string;
   itens: ItemRequisicao[];
   textoBruto: string;
@@ -108,12 +109,13 @@ export async function extrairComGeminiVision(
 Extraia com máxima fidelidade e retorne ESTRITAMENTE um JSON no formato especificado:
 
 {
-  "numero_nota": "Número da ficha ou atendimento (ex: 43127 ou 6541489)",
+  "tipo_documento": "OS" se o documento contiver a palavra ou sigla "OS", "ORDEM DE SERVIÇO" ou similar; caso contrário retorne "NF",
+  "numero_nota": "Número da ficha, OS, nota ou atendimento (ex: 43127 ou 6541489)",
   "solicitante": "Nome ou Razão Social do cliente (localizado após a palavra 'Cliente:' e após o código numérico, excluindo e-mail e outros campos)",
   "itens": [
     {
       "localizacao": "Locação da peça na tabela (ex: 06F01, 14A02, 14E01, etc)",
-      "codigo": "Código da peça (ex: 3058383, 3056155, FS1212)",
+      "codigo": "Código da peça / Referência (ex: 3058383, 3056155, FS1212)",
       "quantidade": "Quantidade com a unidade (ex: '2 und', '1 und', '6 und')",
       "nome": "Descrição completa do material (ex: 'CORREIA V8383', 'PULVERIZADOR DE RESFRIAMENTO DO PISTAO4822')"
     }
@@ -122,10 +124,11 @@ Extraia com máxima fidelidade e retorne ESTRITAMENTE um JSON no formato especif
 
 Regras obrigatórias:
 1. Extraia rigorosamente TODOS os itens da tabela de separação, sem omitir nenhuma linha.
-2. Cada linha da tabela é lida da esquerda para a direita: Locações -> Cód.Peça -> Qtde -> Descrição.
+2. Cada linha da tabela é lida da esquerda para a direita: Locações -> Cód.Peça/Referência -> Qtde -> Descrição.
 3. Se a descrição do material estiver em mais de uma linha na tabela, junte as linhas em um único texto para aquele item.
 4. Não invente itens do cabeçalho como 'VENDA NFE' ou vendedor.
-5. Retorne APENAS o JSON puro, sem crases de markdown e sem explicações adicionais.`;
+5. Se encontrar a palavra "OS" ou "ORDEM DE SERVIÇO" no documento, defina "tipo_documento": "OS". Caso contrário, defina "tipo_documento": "NF".
+6. Retorne APENAS o JSON puro, sem crases de markdown e sem explicações adicionais.`;
 
   // 1. Tenta usar o modelo que já teve sucesso anteriormente
   const modeloSalvo = localStorage.getItem('GEMINI_MODELO_ATIVO');
@@ -220,8 +223,13 @@ Regras obrigatórias:
           localStorage.setItem('GEMINI_MODELO_ATIVO', modelo);
           onStatus?.(`Sucesso com o modelo ${modelo}!`);
 
+          const tipoDoc: TipoDocumento = parsed.tipo_documento === 'OS' || /\b(?:OS|ORDEM\s+DE\s+SERVI[CÇ]O)\b/i.test(rawText)
+            ? 'OS'
+            : 'NF';
+
           return {
             numero_nota: String(parsed.numero_nota || `FICHA-${Date.now().toString().slice(-5)}`),
+            tipo_documento: tipoDoc,
             solicitante: String(parsed.solicitante || 'Cliente não identificado'),
             itens: itensFormatados,
             textoBruto: rawText,
@@ -604,8 +612,13 @@ export function analisarTextoRequisicao(texto: string, nomeArquivo: string): Dad
     });
   }
 
+  // Determina se o documento é uma OS ou NF
+  const isOS = /\b(?:OS|ORDEM\s+DE\s+SERVI[CÇ]O)\b/i.test(texto) || /\bOS[-_\s]?\d+/i.test(texto) || /OS/i.test(nomeArquivo);
+  const tipo_documento: TipoDocumento = isOS ? 'OS' : 'NF';
+
   return {
     numero_nota,
+    tipo_documento,
     solicitante,
     itens,
     textoBruto: texto,

@@ -92,23 +92,66 @@ export function CardRequisicao({ req }: Props) {
     ENTREGUE: 'Entregue',
   };
 
+  const isOS = req.tipo_documento === 'OS' || /\bOS\b/i.test(req.numero_nota);
+
   return (
     <article
       className={`card ${isAguardando ? 'aguardando' : isEmSeparacao ? 'destaque' : ''}`}
-      style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '1rem',
+        borderLeft: isOS ? '5px solid #f43f5e' : '5px solid #38bdf8',
+        background: isOS ? 'rgba(244, 63, 94, 0.03)' : 'var(--clr-surface)'
+      }}
       aria-label={`Requisição ${req.numero_nota}`}
     >
       {/* Cabeçalho do card */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex flex-col gap-1" style={{ minWidth: 0 }}>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Badge de Diferenciação OS vs NF */}
+            {isOS ? (
+              <span
+                style={{
+                  fontSize: '0.7rem',
+                  fontWeight: 900,
+                  letterSpacing: '0.06em',
+                  padding: '0.2rem 0.55rem',
+                  borderRadius: '6px',
+                  background: 'rgba(244, 63, 94, 0.18)',
+                  color: '#f43f5e',
+                  border: '1px solid rgba(244, 63, 94, 0.45)',
+                  textTransform: 'uppercase'
+                }}
+              >
+                🛠️ O.S. (SERVIÇO)
+              </span>
+            ) : (
+              <span
+                style={{
+                  fontSize: '0.7rem',
+                  fontWeight: 800,
+                  letterSpacing: '0.04em',
+                  padding: '0.2rem 0.55rem',
+                  borderRadius: '6px',
+                  background: 'rgba(56, 189, 248, 0.12)',
+                  color: '#38bdf8',
+                  border: '1px solid rgba(56, 189, 248, 0.35)',
+                  textTransform: 'uppercase'
+                }}
+              >
+                📄 NF VENDA
+              </span>
+            )}
+
             <span className={`badge-status ${req.status}`} aria-label={`Status: ${statusLabel[req.status]}`}>
               {req.status === 'AGUARDANDO_RETIRADA' ? (
                 <><Zap size={10} />{statusLabel[req.status]}</>
               ) : statusLabel[req.status]}
             </span>
           </div>
-          <h3 className="font-bold truncate" style={{ fontSize: '1.05rem' }}>
+          <h3 className="font-bold truncate" style={{ fontSize: '1.05rem', color: isOS ? '#f43f5e' : 'inherit' }}>
             {req.numero_nota}
           </h3>
           <p className="text-sm text-muted truncate">{req.solicitante}</p>

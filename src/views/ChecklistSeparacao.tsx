@@ -313,18 +313,36 @@ export function ChecklistSeparacao() {
                 {item.localizacao}
               </span>
 
-              {/* Info do item com Cód. Peça maior que a descrição e Quantidade em destaque com 'und' */}
+              {/* Info do item com Cód. Peça / Referência e Destaque nos 4 últimos dígitos */}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="flex items-center gap-2 flex-wrap mb-1">
                   <span
                     className="font-mono font-bold"
                     style={{
                       fontSize: '1.25rem',
-                      letterSpacing: '0.03em',
+                      letterSpacing: '0.04em',
                       color: item.separado ? 'var(--clr-muted)' : 'var(--clr-primary, #818cf8)'
                     }}
                   >
-                    {item.codigo}
+                    {item.codigo.length > 4 ? (
+                      <>
+                        <span>{item.codigo.slice(0, -4)}</span>
+                        <span
+                          style={{
+                            color: item.separado ? 'var(--clr-muted)' : '#f43f5e',
+                            background: item.separado ? 'transparent' : 'rgba(244, 63, 94, 0.15)',
+                            padding: '0.1rem 0.25rem',
+                            borderRadius: '4px',
+                            borderBottom: item.separado ? 'none' : '2px solid #f43f5e'
+                          }}
+                          title="Últimos 4 dígitos da referência"
+                        >
+                          {item.codigo.slice(-4)}
+                        </span>
+                      </>
+                    ) : (
+                      item.codigo
+                    )}
                   </span>
                   <span
                     style={{

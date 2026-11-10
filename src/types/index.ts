@@ -8,6 +8,8 @@ export type StatusRequisicao =
   | 'AGUARDANDO_RETIRADA'
   | 'ENTREGUE';
 
+export type TipoDocumento = 'NF' | 'OS';
+
 export interface ItemRequisicao {
   codigo: string;
   nome: string;
@@ -19,6 +21,7 @@ export interface ItemRequisicao {
 export interface Requisicao {
   id: string;
   numero_nota: string;
+  tipo_documento?: TipoDocumento;
   solicitante: string;
   status: StatusRequisicao;
   criado_por: string;
