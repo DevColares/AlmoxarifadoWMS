@@ -28,7 +28,7 @@ export async function extrairTextoDoPdf(file: File): Promise<string> {
   for (let numPagina = 1; numPagina <= pdfDoc.numPages; numPagina++) {
     const page = await pdfDoc.getPage(numPagina);
     const content = await page.getTextContent();
-    
+
     // Agrupa itens de texto por coordenada vertical (Y) com tolerância de ±3px para manter as linhas exatas da tabela
     const itensPosicionados: Array<{ x: number; y: number; str: string }> = [];
     for (const item of content.items as any[]) {
@@ -77,6 +77,80 @@ export async function extrairTextoDoPdf(file: File): Promise<string> {
 }
 
 /**
+ * Pré-processa uma imagem para otimizar a legibilidade pelo OCR:
+ * - Redimensiona se for muito pequena
+ * - Converte para tons de cinza
+ * - Aplica filtro de alto contraste e binarização seletiva
+ */
+async function preprocessarImagemParaOCR(file: File): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+
+      if (!ctx) {
+        resolve(url);
+        return;
+      }
+
+      // Escala mínima recomendada para Tesseract ler fontes pequenas de tabela
+      let scale = 1;
+      if (img.width < 1500) {
+        scale = Math.min(2.5, 1800 / img.width);
+      }
+
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const d = imgData.data;
+
+      // Ajuste de contraste e níveis de cinza
+      // Fator de contraste: 1.3
+      const contrast = 1.3;
+      const intercept = 128 * (1 - contrast);
+
+      for (let i = 0; i < d.length; i += 4) {
+        // Luminância perceptiva (Rec. 709)
+        const gray = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+        let cGray = gray * contrast + intercept;
+        if (cGray > 255) cGray = 255;
+        if (cGray < 0) cGray = 0;
+
+        d[i] = cGray;
+        d[i + 1] = cGray;
+        d[i + 2] = cGray;
+      }
+
+      ctx.putImageData(imgData, 0, 0);
+      resolve(canvas.toDataURL('image/png'));
+    };
+
+    img.onerror = () => {
+      resolve(url);
+    };
+
+    img.src = url;
+  });
+}
+
+/**
+ * Normaliza erros comuns de leitura de caracteres que o OCR costuma confundir
+ */
+function normalizarRuidoOCR(str: string): string {
+  return str
+    .replace(/[|│]/g, ' ')
+    .replace(/[“”"„]/g, '')
+    .trim();
+}
+
+/**
  * Extrai texto de imagens (fotos escaneadas, fotos de celular, PNG/JPG) via Tesseract OCR.
  */
 export async function extrairTextoDeImagem(
@@ -85,7 +159,14 @@ export async function extrairTextoDeImagem(
 ): Promise<string> {
   const worker = await createWorker('por');
   try {
-    const ret = await worker.recognize(file);
+    // Configurações do Tesseract para reconhecimento de documentos tabulares
+    await worker.setParameters({
+      tessedit_pageseg_mode: '6' as any, // Assume a single uniform block of text
+      preserve_interword_spaces: '1',
+    });
+
+    const imagemOtimizada = await preprocessarImagemParaOCR(file);
+    const ret = await worker.recognize(imagemOtimizada);
     return ret.data.text;
   } finally {
     await worker.terminate();
@@ -129,10 +210,13 @@ export function analisarTextoRequisicao(texto: string, nomeArquivo: string): Dad
   if (posCliente !== -1) {
     const textoAposCliente = texto.slice(posCliente);
 
-    // Procura o padrão de código numérico seguido de hífen logo após o rótulo 'Cliente' (ex: 60202 - TEMA TRANSPORTES ESPECIAL DE)
-    const matchComCod = textoAposCliente.match(/\b\d{4,8}\s*[-–—]\s*([^\n\r]+)/);
+    // Procura o padrão: "Cliente:" seguido opcionalmente de código de 4 a 8 dígitos e hífen (ex: "546805 - J S COMERCIO DE PECAS PARA")
+    const matchComCod = textoAposCliente.match(/Cliente\s*[:\-]?\s*(?:\d{4,8}\s*[-–—]\s*)?([^\n\r]+)/i);
     if (matchComCod && matchComCod[1]) {
       let nome = matchComCod[1].trim();
+
+      // Se o início ainda contiver "546805 - ", remove o código numérico e traço
+      nome = nome.replace(/^\d{4,8}\s*[-–—:\s]+\s*/, '');
 
       // Delimitadores que marcam o término do nome do cliente quando o PDF junta os blocos de texto
       const delimitadores = [
@@ -196,161 +280,188 @@ export function analisarTextoRequisicao(texto: string, nomeArquivo: string): Dad
     solicitante = 'Solicitante não especificado';
   }
 
-  // 3. Extração dos Itens da Tabela (Locações, Cód.Peça, Qtde, Descrição)
+  // 3. Extração dos Itens da Tabela (Locações -> Cód.Peça -> Qtde -> Descrição)
   const itens: ItemRequisicao[] = [];
-  const linhas = texto.split(/[\r\n]+/);
+  const linhasTexto = texto.split(/[\r\n]+/);
 
-  for (const linha of linhas) {
-    const l = linha.trim();
-    if (!l) continue;
-
-    // 1. Ignorar cabeçalhos e rodapés comuns
-    if (/^(?:Loca[cç][õo]es|C[oó]d\.?\s*Pe[cç]a|Registros|Observa[cç][aã]o|Separado por|Conferido por|Notas Fiscais|Ficha de Separa|Atendimento|Cliente|Data|Filial)/i.test(l)) {
-      continue;
-    }
-
-    // 2. Localizar padrão de Locação na linha:
-    // Ex: "26A01", "26A010", "A-01-02", "A01-02", "BOX-01", "RUA-01", "01A02", "A01", "DEP-01"
-    const regexLocacao = /\b([0-9]{1,3}[A-Z][0-9]{1,3}|[A-Z]-\d{1,2}-\d{1,2}|[A-Z]\d{1,2}-\d{1,2}|[A-Z]{1,4}-\d{1,3}|[A-Z][0-9]{2,3})\b/i;
-    const matchLoc = l.match(regexLocacao);
-
-    if (matchLoc) {
-      const locacao = matchLoc[1].toUpperCase();
-
-      // Pega o conteúdo antes e depois da locação
-      const indiceLoc = l.indexOf(matchLoc[0]);
-      const restoLinha = (l.substring(0, indiceLoc) + ' ' + l.substring(indiceLoc + matchLoc[0].length)).trim();
-
-      // Procura tokens na linha
-      const tokens = restoLinha.split(/\s+/).filter(Boolean);
-
-      if (tokens.length >= 2) {
-        // Encontra o código da peça (token alfanumérico, ex: FF5706I, LF16352I, 3937706, 04103812, MAT-001)
-        let codigoIndex = -1;
-        for (let i = 0; i < tokens.length; i++) {
-          const t = tokens[i];
-          // Código costuma ter letras+números ou ser código numérico de 4+ dígitos
-          if (/^[A-Z0-9\-\/]{4,18}$/i.test(t) && !/^\d{1,3}$/.test(t) && !/^(?:UND|UN|PC|CX|KG|M)$/i.test(t)) {
-            codigoIndex = i;
-            break;
-          }
+    // Pré-filtra e limpa cada linha
+    const linhas: string[] = [];
+    for (const rawL of linhasTexto) {
+      const l = normalizarRuidoOCR(rawL);
+      if (!l) continue;
+        // Ignora cabeçalhos, rodapés e metadados
+        if (/^(?:Loca[cç][õo]es|C[oó]d\.?\s*Pe[cç]a|Registros|Observa[cç][aã]o|Separado por|Conferido por|Notas Fiscais|Ficha de Separa|Atendimento|Cliente|Data|Filial|Vendedor|E-mail|PIX|S[eé]rie)/i.test(l)) {
+          continue;
         }
-
-        // Se não achou com critério estrito, assume o primeiro token longo
-        if (codigoIndex === -1 && tokens.length > 0) {
-          codigoIndex = 0;
-        }
-
-        if (codigoIndex !== -1) {
-          const codigo = tokens[codigoIndex].toUpperCase();
-
-          // Encontra quantidade (número inteiro ou decimal)
-          let qtdIndex = -1;
-          for (let i = 0; i < tokens.length; i++) {
-            if (i !== codigoIndex && /^\d+(?:[.,]\d+)?(?:\s*(?:un|und|pc|pça|cx|kg|m))?$/i.test(tokens[i])) {
-              qtdIndex = i;
-              break;
-            }
-          }
-
-          let quantidade = '1 und';
-          if (qtdIndex !== -1) {
-            const rawQtd = tokens[qtdIndex];
-            quantidade = /[a-zA-Z]/.test(rawQtd) ? rawQtd : `${rawQtd} und`;
-          }
-
-          // Descrição do material é tudo o que sobrar
-          const indicesUsados = new Set([codigoIndex, qtdIndex]);
-          let descricaoTokens = tokens.filter((_, idx) => !indicesUsados.has(idx));
-
-          // Limpa marcadores comuns de rodapé
-          let descricao = descricaoTokens.join(' ').replace(/\b(?:Observa[cç][aã]o|Registros|Separado|Conferido).*/i, '').trim();
-
-          if (descricao.length < 2) {
-            descricao = `Material ${codigo}`;
-          }
-
-          // Adiciona se não for duplicata idêntica
-          if (!itens.some(it => it.codigo === codigo && it.localizacao === locacao)) {
-            itens.push({
-              codigo,
-              nome: descricao,
-              localizacao: locacao,
-              quantidade,
-              separado: false,
-            });
-            continue;
-          }
-        }
-      }
-    }
-
-    // 3. Fallback genérico caso a linha não tenha o formato padrão de locação
-    const matchCod = l.match(/\b([A-Z]{2,5}-\d{3,6}|[A-Z]{2}\d{4,6}[A-Z]?|\d{5,8})\b/i);
-    const matchQtd = l.match(/\b(\d+(?:[.,]\d+)?\s*(?:unidades?|pe[cç]as?|metros?|un|und|p[cç]|cx|kg|pct|m)?)\b/i);
-
-    if (matchCod && (matchLoc || matchQtd) && l.length > 6) {
-      const codigo = matchCod[1].toUpperCase();
-      const localizacao = matchLoc ? matchLoc[1].toUpperCase() : 'A-01-01';
-      let quantidade = matchQtd ? matchQtd[1] : '1 und';
-      if (!/[a-zA-Z]/.test(quantidade)) {
-        quantidade = `${quantidade.trim()} und`;
+        linhas.push(l);
       }
 
-      let nome = l
-        .replace(matchCod[0], '')
-        .replace(matchLoc ? matchLoc[0] : '', '')
-        .replace(matchQtd ? matchQtd[0] : '', '')
-        .replace(/^[\s\-_.:;]+|[\s\-_.:;]+$/g, '')
-        .trim();
+      // Regex para Locação:
+      // Ex: "21A01", "26A010", "A-01-02", "BOX-01", "01A02", etc.
+      const regexLocacao = /\b([0-9]{1,3}[A-Z][0-9]{1,4}|[A-Z]-\d{1,2}-\d{1,2}|[A-Z]\d{1,2}-\d{1,2}|[A-Z]{1,4}-\d{1,3}|[A-Z][0-9]{2,3})\b/i;
 
-      if (nome.length < 3) {
-        nome = `Material ${codigo}`;
-      }
+      for (let i = 0; i < linhas.length; i++) {
+        const l = linhas[i];
 
-      if (!itens.some(it => it.codigo === codigo && it.localizacao === localizacao)) {
-        itens.push({
-          codigo,
-          nome,
-          localizacao,
-          quantidade,
-          separado: false,
-        });
-      }
-    }
-  }
+        // Verifica se a linha inicia ou contém um padrão de locação
+        const matchLoc = l.match(regexLocacao);
 
-  // Fallback se não conseguiu quebrar por linhas (ex: OCR tudo em 1 linha contínua)
-  if (itens.length === 0) {
-    const regexSeq = /([0-9]{1,3}[A-Z][0-9]{2,3}|[A-Z]-\d{2}-\d{2})\s+([A-Z0-9\-\/]{4,15})\s+(\d+)\s+([A-Z\s0-9]{4,50}?)(?=[0-9]{1,3}[A-Z][0-9]{2,3}|Registros|Observa|$)/gi;
-    let seqMatch;
-    while ((seqMatch = regexSeq.exec(texto)) !== null) {
-      const q = seqMatch[3].trim();
-      itens.push({
-        localizacao: seqMatch[1].toUpperCase(),
-        codigo: seqMatch[2].toUpperCase(),
-        quantidade: `${q} und`,
-        nome: seqMatch[4].trim(),
-        separado: false,
-      });
-    }
-  }
+          if (matchLoc && matchLoc.index !== undefined) {
+            const locacao = matchLoc[1].toUpperCase();
 
-  // Se mesmo assim nenhum item foi parseado, cria 1 item genérico com o nome do arquivo
-  if (itens.length === 0) {
-    itens.push({
-      codigo: 'MAT-001',
-      nome: 'Material importado (' + nomeArquivo + ')',
-      localizacao: 'A-01-01',
-      quantidade: '1 und',
-      separado: false,
-    });
-  }
+            // Pega o conteúdo a partir e após a locação
+            const indiceLoc = matchLoc.index;
+            // Parte restante da linha (preferencialmente após a locação)
+            const aposLoc = l.substring(indiceLoc + matchLoc[0].length).trim();
+            const antesLoc = l.substring(0, indiceLoc).trim();
+            const restoLinha = aposLoc.length > 0 ? aposLoc : antesLoc;
 
-  return {
-    numero_nota,
-    solicitante,
-    itens,
-    textoBruto: texto,
-  };
-}
+            // Padrão específico da Ficha: [Cód.Peça] [Qtde] [Descrição...]
+            // Exemplo: "LF670I 24 FILTRO DE OLEO LUBRIFICANTE"
+            const matchSequencial = restoLinha.match(/^([A-Z0-9\-\/]{4,18})\s+(\d+(?:[.,]\d+)?(?:\s*(?:un|und|pc|pça|cx|kg|m))?)\s*(.*)$/i);
+
+              let codigo = '';
+              let quantidade = '1 und';
+              let descricao = '';
+
+              if (matchSequencial) {
+                codigo = matchSequencial[1].toUpperCase();
+                const rawQtd = matchSequencial[2].trim();
+                quantidade = /[a-zA-Z]/.test(rawQtd) ? rawQtd : `${rawQtd} und`;
+                descricao = matchSequencial[3].trim();
+              } else {
+                // Se a ordem não estiver estritamente sequencial, analisa tokens
+                const tokens = (restoLinha + ' ' + (aposLoc.length > 0 ? antesLoc : '')).trim().split(/\s+/).filter(Boolean);
+
+                  if (tokens.length >= 2) {
+                    // 1º token costuma ser o Cód. Peça
+                    let codIdx = -1;
+                    for (let t = 0; t < tokens.length; t++) {
+                      if (/^[A-Z0-9\-\/]{4,18}$/i.test(tokens[t]) && !/^\d{1,3}$/.test(tokens[t]) && !/^(?:UND|UN|PC|CX|KG|M)$/i.test(tokens[t])) {
+                        codIdx = t;
+                        break;
+                      }
+                    }
+                    if (codIdx === -1) codIdx = 0;
+                    codigo = tokens[codIdx].toUpperCase();
+
+                        // 2º elemento costuma ser a Quantidade
+                        let qtdIdx = -1;
+                        for (let t = 0; t < tokens.length; t++) {
+                          if (t !== codIdx && /^\d+(?:[.,]\d+)?(?:\s*(?:un|und|pc|pça|cx|kg|m))?$/i.test(tokens[t])) {
+                            qtdIdx = t;
+                            break;
+                          }
+                        }
+
+                          if (qtdIdx !== -1) {
+                            const rawQtd = tokens[qtdIdx];
+                            quantidade = /[a-zA-Z]/.test(rawQtd) ? rawQtd : `${rawQtd} und`;
+                          }
+
+                          const indicesUsados = new Set([codIdx, qtdIdx]);
+                          descricao = tokens.filter((_, idx) => !indicesUsados.has(idx)).join(' ').trim();
+                        }
+                      }
+
+                      // Suporte para descrição que quebrou em 2 linhas (ex: "FILTRO DE OLEO LUBRIFICANTE" e na linha seguinte "CS192077")
+                      if (i + 1 < linhas.length) {
+                        const proxLinha = linhas[i + 1].trim();
+                        // Se a próxima linha NÃO tem uma nova locação e não é cabeçalho/observação, pertence à descrição do item atual
+                        if (!proxLinha.match(regexLocacao) && !/^(?:Registros|Observa[cç][aã]o|Separado|Conferido)/i.test(proxLinha)) {
+                          descricao = (descricao ? `${descricao} ` : '') + proxLinha;
+                          i++; // avança para não processar a linha complementar como item separado
+                        }
+                      }
+
+                      // Limpeza de rodapés eventuais na descrição
+                      descricao = descricao.replace(/\b(?:Registros|Observa[cç][aã]o|Separado|Conferido).*/i, '').trim();
+
+                      if (!descricao || descricao.length < 2) {
+                        descricao = `Material ${codigo || locacao}`;
+                      }
+
+                      if (codigo) {
+                        // Evita duplicatas idênticas
+                        if (!itens.some(it => it.codigo === codigo && it.localizacao === locacao)) {
+                          itens.push({
+                            codigo,
+                            nome: descricao,
+                            localizacao: locacao,
+                            quantidade,
+                            separado: false,
+                          });
+                          continue;
+                        }
+                      }
+                    }
+
+                    // Fallback genérico caso a linha não tenha o padrão exato de início de locação
+                    const matchCod = l.match(/\b([A-Z]{2,5}-\d{3,6}|[A-Z]{2}\d{4,6}[A-Z]?|\d{5,8})\b/i);
+                    const matchQtd = l.match(/\b(\d+(?:[.,]\d+)?\s*(?:unidades?|pe[cç]as?|metros?|un|und|p[cç]|cx|kg|pct|m)?)\b/i);
+
+                    if (matchCod && (matchLoc || matchQtd) && l.length > 6) {
+                      const codigo = matchCod[1].toUpperCase();
+                      const localizacao = matchLoc ? matchLoc[1].toUpperCase() : 'A-01-01';
+                      let quantidade = matchQtd ? matchQtd[1] : '1 und';
+                      if (!/[a-zA-Z]/.test(quantidade)) {
+                        quantidade = `${quantidade.trim()} und`;
+                      }
+
+                      let nome = l
+                        .replace(matchCod[0], '')
+                        .replace(matchLoc ? matchLoc[0] : '', '')
+                        .replace(matchQtd ? matchQtd[0] : '', '')
+                        .replace(/^[\s\-_.:;]+|[\s\-_.:;]+$/g, '')
+                        .trim();
+
+                      if (nome.length < 3) {
+                        nome = `Material ${codigo}`;
+                      }
+
+                      if (!itens.some(it => it.codigo === codigo && it.localizacao === localizacao)) {
+                        itens.push({
+                          codigo,
+                          nome,
+                          localizacao,
+                          quantidade,
+                          separado: false,
+                        });
+                      }
+                    }
+                  }
+
+                  // Fallback se não conseguiu quebrar por linhas (ex: OCR tudo em 1 linha contínua)
+                  if (itens.length === 0) {
+                    const regexSeq = /([0-9]{1,3}[A-Z][0-9]{2,3}|[A-Z]-\d{2}-\d{2})\s+([A-Z0-9\-\/]{4,15})\s+(\d+)\s+([A-Z\s0-9]{4,50}?)(?=[0-9]{1,3}[A-Z][0-9]{2,3}|Registros|Observa|$)/gi;
+                    let seqMatch;
+                    while ((seqMatch = regexSeq.exec(texto)) !== null) {
+                      const q = seqMatch[3].trim();
+                      itens.push({
+                        localizacao: seqMatch[1].toUpperCase(),
+                        codigo: seqMatch[2].toUpperCase(),
+                        quantidade: `${q} und`,
+                        nome: seqMatch[4].trim(),
+                        separado: false,
+                      });
+                    }
+                  }
+
+                  // Se mesmo assim nenhum item foi parseado, cria 1 item genérico com o nome do arquivo
+                  if (itens.length === 0) {
+                    itens.push({
+                      codigo: 'MAT-001',
+                      nome: 'Material importado (' + nomeArquivo + ')',
+                      localizacao: 'A-01-01',
+                      quantidade: '1 und',
+                      separado: false,
+                    });
+                  }
+
+                  return {
+                    numero_nota,
+                    solicitante,
+                    itens,
+                    textoBruto: texto,
+                  };
+                }
