@@ -105,33 +105,42 @@ export async function extrairComGeminiVision(
 ): Promise<DadosRequisicaoExtraidos> {
   const { base64, mimeType } = await fileParaBase64(file);
 
-  const prompt = `Analise atentamente esta imagem de Ficha de Separação de Almoxarifado / WMS.
+  const prompt = `Analise atentamente esta imagem de Ficha de Separação de Almoxarifado / WMS (seja Ficha de Venda NF ou Ficha de Ordem de Serviço OS).
 Extraia com máxima fidelidade e retorne ESTRITAMENTE um JSON no formato especificado:
 
-{
-  "tipo_documento": "OS" se o documento contiver a palavra ou sigla "OS", "ORDEM DE SERVIÇO" ou similar; caso contrário retorne "NF",
-  "numero_nota": "Número da ficha, OS, nota ou atendimento (ex: 43127 ou 6541489)",
-  "solicitante": "Nome ou Razão Social do cliente (localizado após a palavra 'Cliente:' e após o código numérico, excluindo e-mail e outros campos)",
-  "itens": [
-    {
-      "localizacao": "Locação da peça na tabela (ex: 06F01, 14A02, 14E01, etc)",
-      "codigo": "Código da peça / Referência (ex: 3058383, 3056155, FS1212)",
-      "quantidade": "Quantidade com a unidade (ex: '2 und', '1 und', '6 und')",
-      "nome": "Descrição completa do material (ex: 'CORREIA V8383', 'PULVERIZADOR DE RESFRIAMENTO DO PISTAO4822')"
-    }
-  ]
-}
+  {
+    "tipo_documento": "OS" se o documento contiver a palavra ou sigla "OS", "ORDEM DE SERVIÇO" ou similar; caso contrário retorne "NF",
+        "numero_nota": "Número da ficha, OS, nota ou atendimento (ex: 43127, 23280 ou 6541489)",
+          "solicitante": "Nome ou Razão Social do cliente (localizado após a palavra 'Cliente:' e após o código numérico, excluindo e-mail e outros campos)",
+            "itens": [
+              {
+                "localizacao": "Locação da peça na tabela (ex: ANEXO-02, 27B03, 31D03, 31E01, 31E03, 33A01, 06F01, etc)",
+                "codigo": "Código da Peça / Referência exata da peça (ex: 0434.33.3, FF5488I, 6736-51-5142XXN, T0030012D, 600-319-3610XXN, 600-185-4100XXN, 3058383)",
+                "quantidade": "Quantidade com a unidade (ex: '2 und', '1 und', '6 und')",
+      "nome": "Descrição completa do material (ex: 'FILTRO D...', 'CARTUCHO...', 'ELEMENTO FILTRO...', 'PREMIUM...')"
+              }
+            ]
+  }
 
 Regras obrigatórias:
-1. Extraia rigorosamente TODOS os itens da tabela de separação, sem omitir nenhuma linha.
-2. Cada linha da tabela é lida da esquerda para a direita: Locações -> Cód.Peça/Referência -> Qtde -> Descrição.
+  1. Extraia rigorosamente TODOS os itens da tabela de separação, sem omitir nenhuma linha.
+2. IMPORTANTE SOBRE A COLUNA DE CÓDIGO / REFERÊNCIA:
+  - Em fichas que possuem as colunas[Locações | Referência | Código | Descrição] (comum em fichas de OS):
+  -> EXTRAIA SEMPRE o valor que está na coluna "Referência"(ou "Cód.Peça") como campo "codigo"(exemplos: 0434.33.3, 0434.12.3, FF5488I, 6736 - 51 - 5142XXN, T0030012D, 600 - 319 - 3610XXN, 600 - 185 - 4100XXN).
+     -> IGNORE a coluna numérica "Código"(ex: 1172207, 190820, 730970, 1628190, 724633, 724526).O separador precisa da REFERÊNCIA da peça!
+    - Em fichas normais onde existe apenas "Cód.Peça", extraia esse código normalmente.
 3. Se a descrição do material estiver em mais de uma linha na tabela, junte as linhas em um único texto para aquele item.
-4. Não invente itens do cabeçalho como 'VENDA NFE' ou vendedor.
-5. Se encontrar a palavra "OS" ou "ORDEM DE SERVIÇO" no documento, defina "tipo_documento": "OS". Caso contrário, defina "tipo_documento": "NF".
-6. Retorne APENAS o JSON puro, sem crases de markdown e sem explicações adicionais.`;
+4. Se a quantidade não estiver explícita em uma coluna dedicada na tabela, assuma "1 und" por linha.
+5. Não invente itens do cabeçalho como 'VENDA NFE' ou vendedor.
+6. Se encontrar a palavra "OS", "ORDEM DE SERVIÇO" ou "BASE NA OS" no documento, defina "tipo_documento": "OS". Caso contrário, defina "tipo_documento": "NF".
+7. Retorne APENAS o JSON puro, sem crases de markdown e sem explicações adicionais.`;
 
-  // 1. Tenta usar o modelo que já teve sucesso anteriormente
-  const modeloSalvo = localStorage.getItem('GEMINI_MODELO_ATIVO');
+  // 1. Tenta usar o modelo que já teve sucesso anteriormente (ignora se for gemma)
+  let modeloSalvo = localStorage.getItem('GEMINI_MODELO_ATIVO');
+  if (modeloSalvo && modeloSalvo.toLowerCase().includes('gemma')) {
+    localStorage.removeItem('GEMINI_MODELO_ATIVO');
+    modeloSalvo = null;
+  }
 
   // 2. Consulta dinâmica da lista de modelos disponíveis para a chave do usuário
   let modelosDisponiveis: string[] = [];
@@ -142,7 +151,14 @@ Regras obrigatórias:
       const listData = await listRes.json();
       const todosModelos = (listData?.models || []) as Array<{ name: string; supportedGenerationMethods?: string[] }>;
       modelosDisponiveis = todosModelos
-        .filter((m) => m.supportedGenerationMethods?.includes('generateContent'))
+        .filter((m) => {
+          const name = m.name.toLowerCase();
+          // Ignora modelos gemma, embedding, tts, etc. que não aceitam imagens multimodal
+          if (name.includes('gemma') || name.includes('embedding') || name.includes('aqa')) {
+            return false;
+          }
+          return m.supportedGenerationMethods?.includes('generateContent');
+        })
         .map((m) => m.name.replace(/^models\//, ''));
     }
   } catch {
@@ -368,259 +384,273 @@ export async function extrairTextoDeImagem(
  * (ex: Locações | Cód.Peça | Qtde | Descrição | Cliente | Data).
  */
 export function analisarTextoRequisicao(texto: string, nomeArquivo: string): DadosRequisicaoExtraidos {
-  // 1. Número da Ficha / Nota / Atendimento
+  // 1. Número da Ficha / OS / Nota / Atendimento
   let numero_nota = '';
 
+  // Procura "COM BASE NA OS: 23280" ou "OS: 23280" ou "Ordem de Serviço 23280"
+  const matchOS = texto.match(/(?:BASE\s+NA\s+OS|ORDEM\s+DE\s+SERVI[CÇ]O|OS)\s*[:\-#]?\s*(\d{4,8})/i);
   // Procura "Ficha de Separação - 42947" ou "Atendimento: 6507843"
   const matchFicha = texto.match(/Ficha(?:\s+de)?\s+Separa[cç][aã]o\s*[-:]?\s*(\d+)/i);
   const matchAtendimento = texto.match(/Atendimento(?:\s*[:\n\r]+)?\s*(\d{5,10})/i);
   const matchGenerico = texto.match(/(?:NF|NOTA|N[ÚU]MERO|ORDEM|REQ(?:UISI[CÇ][AÃ]O)?|N°|Nº)[^\w\d]*([A-Z0-9\-\/]{3,15})/i);
 
-  if (matchFicha && matchFicha[1]) {
-    numero_nota = matchFicha[1].trim();
-  } else if (matchAtendimento && matchAtendimento[1]) {
-    numero_nota = matchAtendimento[1].trim();
-  } else if (matchGenerico && matchGenerico[1]) {
-    numero_nota = matchGenerico[1].toUpperCase();
-    if (!numero_nota.includes('-') && !numero_nota.startsWith('NF')) {
-      numero_nota = `NF-${numero_nota}`;
-    }
-  } else {
-    // Fallback: usar o nome do arquivo se contiver número
-    const cleanName = nomeArquivo.replace(/\.[a-zA-Z0-9]+$/i, '').replace(/[^a-zA-Z0-9\-_]/g, '');
-    numero_nota = cleanName.length > 2 ? cleanName.toUpperCase() : `REC-${Math.floor(10000 + Math.random() * 90000)}`;
-  }
-
-  // 2. Extração do Cliente / Solicitante (pega estritamente o NOME após o código do cliente)
-  let solicitante = '';
-
-  // Procura a palavra 'Cliente' no texto para não confundir com a natureza de operação (ex: 1840 - VENDA NFE)
-  const posCliente = texto.search(/\bCliente\b/i);
-
-  if (posCliente !== -1) {
-    const textoAposCliente = texto.slice(posCliente);
-
-    // Procura o padrão: "Cliente:" seguido opcionalmente de código de 4 a 8 dígitos e hífen (ex: "546805 - J S COMERCIO DE PECAS PARA")
-    const matchComCod = textoAposCliente.match(/Cliente\s*[:\-]?\s*(?:\d{4,8}\s*[-–—]\s*)?([^\n\r]+)/i);
-    if (matchComCod && matchComCod[1]) {
-      let nome = matchComCod[1].trim();
-
-      // Se o início ainda contiver "546805 - ", remove o código numérico e traço
-      nome = nome.replace(/^\d{4,8}\s*[-–—:\s]+\s*/, '');
-
-      // Delimitadores que marcam o término do nome do cliente quando o PDF junta os blocos de texto
-      const delimitadores = [
-        /\b(?:DCCO|Filial|Vendedor|NORONHA|Transportadora|E-mail|Email|Data|Atendimento|Qtd|Volumes|Loca[cç][õo]es|C[oó]d|Registros|S[eé]rie)\b/i,
-        /\b\d{2}\/\d{2}\/\d{4}\b/, // Datas (ex: 22/10/2026)
-        /\b[^\s@]+@[^\s@]+\b/,     // E-mails (ex: tema@...)
-        /\b\d{6,8}\b/,              // Números avulsos (ex: 6507843)
-      ];
-
-      for (const delim of delimitadores) {
-        const idx = nome.search(delim);
-        if (idx !== -1) {
-          nome = nome.substring(0, idx);
-        }
+    if (matchOS && matchOS[1]) {
+      numero_nota = `OS-${matchOS[1].trim()}`;
+    } else if (matchFicha && matchFicha[1]) {
+      numero_nota = matchFicha[1].trim();
+    } else if (matchAtendimento && matchAtendimento[1]) {
+      numero_nota = matchAtendimento[1].trim();
+    } else if (matchGenerico && matchGenerico[1]) {
+      numero_nota = matchGenerico[1].toUpperCase();
+      if (!numero_nota.includes('-') && !numero_nota.startsWith('NF')) {
+        numero_nota = `NF-${numero_nota}`;
       }
-
-      nome = nome.replace(/^[-–—:\s]+|[-–—:\s]+$/g, '').trim();
-
-      if (nome.length > 2 && !/^(?:Loca[cç][õo]es|E-mail|Email|Transportadora)$/i.test(nome)) {
-        solicitante = nome;
-      }
+    } else {
+      // Fallback: usar o nome do arquivo se contiver número
+      const cleanName = nomeArquivo.replace(/\.[a-zA-Z0-9]+$/i, '').replace(/[^a-zA-Z0-9\-_]/g, '');
+      numero_nota = cleanName.length > 2 ? cleanName.toUpperCase() : `REC-${Math.floor(10000 + Math.random() * 90000)}`;
     }
 
-    // Se não encontrou código numérico, pega o que estiver na linha de 'Cliente:'
-    if (!solicitante) {
-      const matchLinha = textoAposCliente.match(/Cliente\s*[:\-]?\s*([^\n\r]+)/i);
-      if (matchLinha && matchLinha[1]) {
-        let raw = matchLinha[1].trim();
+    // 2. Extração do Cliente / Solicitante (pega estritamente o NOME após o código do cliente)
+    let solicitante = '';
+
+    // Procura a palavra 'Cliente' no texto para não confundir com a natureza de operação (ex: 1840 - VENDA NFE)
+    const posCliente = texto.search(/\bCliente\b/i);
+
+    if (posCliente !== -1) {
+      const textoAposCliente = texto.slice(posCliente);
+
+      // Procura o padrão: "Cliente:" seguido opcionalmente de código de 4 a 8 dígitos e hífen (ex: "546805 - J S COMERCIO DE PECAS PARA")
+      const matchComCod = textoAposCliente.match(/Cliente\s*[:\-]?\s*(?:\d{4,8}\s*[-–—]\s*)?([^\n\r]+)/i);
+      if (matchComCod && matchComCod[1]) {
+        let nome = matchComCod[1].trim();
+
+        // Se o início ainda contiver "546805 - ", remove o código numérico e traço
+        nome = nome.replace(/^\d{4,8}\s*[-–—:\s]+\s*/, '');
+
+        // Delimitadores que marcam o término do nome do cliente quando o PDF junta os blocos de texto
         const delimitadores = [
           /\b(?:DCCO|Filial|Vendedor|NORONHA|Transportadora|E-mail|Email|Data|Atendimento|Qtd|Volumes|Loca[cç][õo]es|C[oó]d|Registros|S[eé]rie)\b/i,
-          /\b\d{2}\/\d{2}\/\d{4}\b/,
-          /\b[^\s@]+@[^\s@]+\b/,
-          /\b\d{6,8}\b/,
+          /\b\d{2}\/\d{2}\/\d{4}\b/, // Datas (ex: 22/10/2026)
+          /\b[^\s@]+@[^\s@]+\b/,     // E-mails (ex: tema@...)
+          /\b\d{6,8}\b/,              // Números avulsos (ex: 6507843)
         ];
+
         for (const delim of delimitadores) {
-          const idx = raw.search(delim);
-          if (idx !== -1) raw = raw.substring(0, idx);
+          const idx = nome.search(delim);
+          if (idx !== -1) {
+            nome = nome.substring(0, idx);
+          }
         }
-        raw = raw.replace(/^\d+\s*[-–—]?\s*/, '').replace(/^[-–—:\s]+|[-–—:\s]+$/g, '').trim();
-        if (raw.length > 2 && !/^(?:Loca[cç][õo]es|E-mail|Email|Transportadora)$/i.test(raw)) {
+
+        nome = nome.replace(/^[-–—:\s]+|[-–—:\s]+$/g, '').trim();
+
+        if (nome.length > 2 && !/^(?:Loca[cç][õo]es|E-mail|Email|Transportadora)$/i.test(nome)) {
+          solicitante = nome;
+        }
+      }
+
+      // Se não encontrou código numérico, pega o que estiver na linha de 'Cliente:'
+      if (!solicitante) {
+        const matchLinha = textoAposCliente.match(/Cliente\s*[:\-]?\s*([^\n\r]+)/i);
+        if (matchLinha && matchLinha[1]) {
+          let raw = matchLinha[1].trim();
+          const delimitadores = [
+            /\b(?:DCCO|Filial|Vendedor|NORONHA|Transportadora|E-mail|Email|Data|Atendimento|Qtd|Volumes|Loca[cç][õo]es|C[oó]d|Registros|S[eé]rie)\b/i,
+            /\b\d{2}\/\d{2}\/\d{4}\b/,
+            /\b[^\s@]+@[^\s@]+\b/,
+            /\b\d{6,8}\b/,
+          ];
+          for (const delim of delimitadores) {
+            const idx = raw.search(delim);
+            if (idx !== -1) raw = raw.substring(0, idx);
+          }
+          raw = raw.replace(/^\d+\s*[-–—]?\s*/, '').replace(/^[-–—:\s]+|[-–—:\s]+$/g, '').trim();
+          if (raw.length > 2 && !/^(?:Loca[cç][õo]es|E-mail|Email|Transportadora)$/i.test(raw)) {
+            solicitante = raw;
+          }
+        }
+      }
+    }
+
+    // Fallback para outros tipos de documentos (Solicitante / Empresa / Destinatário)
+    if (!solicitante) {
+      const matchSolicitante = texto.match(/(?:SOLICITANTE|DESTINAT[ÁA]RIO|EMPRESA)\s*[:\-]?\s*([^\n\r]+)/i);
+      if (matchSolicitante && matchSolicitante[1]) {
+        let raw = matchSolicitante[1].trim();
+        raw = raw.split(/\b(?:E-mail|Email|Transportadora|Data|Filial|Vendedor|Atendimento|Qtd|Loca[cç][õo]es)\b/i)[0].trim();
+        raw = raw.replace(/^\d+\s*[-–—]?\s*/, '').replace(/^[-–—:\s]+/, '').trim();
+        if (raw.length > 2 && !/^(?:Loca[cç][õo]es|E-mail|Email)$/i.test(raw)) {
           solicitante = raw;
         }
       }
     }
-  }
 
-  // Fallback para outros tipos de documentos (Solicitante / Empresa / Destinatário)
-  if (!solicitante) {
-    const matchSolicitante = texto.match(/(?:SOLICITANTE|DESTINAT[ÁA]RIO|EMPRESA)\s*[:\-]?\s*([^\n\r]+)/i);
-    if (matchSolicitante && matchSolicitante[1]) {
-      let raw = matchSolicitante[1].trim();
-      raw = raw.split(/\b(?:E-mail|Email|Transportadora|Data|Filial|Vendedor|Atendimento|Qtd|Loca[cç][õo]es)\b/i)[0].trim();
-      raw = raw.replace(/^\d+\s*[-–—]?\s*/, '').replace(/^[-–—:\s]+/, '').trim();
-      if (raw.length > 2 && !/^(?:Loca[cç][õo]es|E-mail|Email)$/i.test(raw)) {
-        solicitante = raw;
+    if (!solicitante) {
+      solicitante = 'Solicitante não especificado';
+    }
+
+    // 3. Extração dos Itens da Tabela (Locações -> Cód.Peça -> Qtde -> Descrição)
+    const itens: ItemRequisicao[] = [];
+    const linhasTexto = texto.split(/[\r\n]+/);
+
+    // Pré-filtra e limpa cada linha
+    const linhas: string[] = [];
+    for (const rawL of linhasTexto) {
+      const l = normalizarRuidoOCR(rawL);
+      if (!l) continue;
+      // Ignora estritamente cabeçalhos, rodapés e linhas de metadados
+      if (/^(?:Loca[cç][õo]es|C[oó]d\.?\s*Pe[cç]a|Registros|Observa[cç][aã]o|Separado|Conferido|Notas Fiscais|Ficha de Separa|Atendimento|Cliente|Data|Filial|Vendedor|E-mail|Email|PIX|S[eé]rie|A PRAZO|FAVOR COLOCAR|\d{3,5}\s*-\s*VENDA)/i.test(l)) {
+        continue;
       }
+      // Ignora linhas de cabeçalho da empresa (ex: DCCO NORTE, VENDA NFE)
+      if (/(?:VENDA NFE|NOROESTE|AMAZONIA|SOLUCOES EM ENER)/i.test(l)) {
+        continue;
+      }
+      linhas.push(l);
     }
-  }
 
-  if (!solicitante) {
-    solicitante = 'Solicitante não especificado';
-  }
+    // Regex para Locação: ex: "06F01", "14A02", "14E01", "ANEXO-02", "27B03", "31D03", "31E01", "31E03", "33A01"
+    const regexLocacao = /\b(ANEXO[-\s]?\d{1,3}|[0-9]{1,3}[A-Z][0-9]{1,4}|[A-Z]-\d{1,2}-\d{1,2}|[A-Z]\d{1,2}-\d{1,2})\b/i;
 
-  // 3. Extração dos Itens da Tabela (Locações -> Cód.Peça -> Qtde -> Descrição)
-  const itens: ItemRequisicao[] = [];
-  const linhasTexto = texto.split(/[\r\n]+/);
+    for (let i = 0; i < linhas.length; i++) {
+      const l = linhas[i];
 
-  // Pré-filtra e limpa cada linha
-  const linhas: string[] = [];
-  for (const rawL of linhasTexto) {
-    const l = normalizarRuidoOCR(rawL);
-    if (!l) continue;
-    // Ignora estritamente cabeçalhos, rodapés e linhas de metadados
-    if (/^(?:Loca[cç][õo]es|C[oó]d\.?\s*Pe[cç]a|Registros|Observa[cç][aã]o|Separado|Conferido|Notas Fiscais|Ficha de Separa|Atendimento|Cliente|Data|Filial|Vendedor|E-mail|Email|PIX|S[eé]rie|A PRAZO|FAVOR COLOCAR|\d{3,5}\s*-\s*VENDA)/i.test(l)) {
-      continue;
-    }
-    // Ignora linhas de cabeçalho da empresa (ex: DCCO NORTE, VENDA NFE)
-    if (/(?:VENDA NFE|NOROESTE|AMAZONIA|SOLUCOES EM ENER)/i.test(l)) {
-      continue;
-    }
-    linhas.push(l);
-  }
+      // Ignora linhas de ruído numérico curto
+      if (/^[\d\s\-_]+$/.test(l) && l.length < 8) continue;
 
-  // Regex para Locação: ex: "06F01", "14A02", "14E01", "15A04", "16E02", "16F02", "26D01", "21A01"
-  const regexLocacao = /\b([0-9]{1,3}[A-Z][0-9]{1,4}|[A-Z]-\d{1,2}-\d{1,2}|[A-Z]\d{1,2}-\d{1,2})\b/i;
+      const matchLoc = l.match(regexLocacao);
 
-  for (let i = 0; i < linhas.length; i++) {
-    const l = linhas[i];
+      if (matchLoc && matchLoc.index !== undefined) {
+        const locacao = matchLoc[1].toUpperCase();
 
-    // Ignora linhas de ruído numérico curto
-    if (/^[\d\s\-_]+$/.test(l) && l.length < 8) continue;
+        // Conteúdo após e antes da locação
+        const indiceLoc = matchLoc.index;
+        const aposLoc = l.substring(indiceLoc + matchLoc[0].length).trim();
+        const antesLoc = l.substring(0, indiceLoc).trim();
+        const conteudoLinha = aposLoc.length > 0 ? aposLoc : antesLoc;
 
-    const matchLoc = l.match(regexLocacao);
+        // Se a linha tem o formato de tabela de OS: [Referência] [Código numérico] [Descrição]
+        // Ex: "FF5488I 190820 FILTRO D" ou "0434.33.3 1172207 PREMIUM..."
+        // Devemos extrair a REFERÊNCIA e IGNORAR o código numérico!
+        let codigo = '';
+        let quantidade = '1 und';
+        let descricao = '';
 
-    if (matchLoc && matchLoc.index !== undefined) {
-      const locacao = matchLoc[1].toUpperCase();
+          const tokens = conteudoLinha.split(/\s+/).filter(Boolean);
 
-      // Conteúdo após e antes da locação
-      const indiceLoc = matchLoc.index;
-      const aposLoc = l.substring(indiceLoc + matchLoc[0].length).trim();
-      const antesLoc = l.substring(0, indiceLoc).trim();
-      const conteudoLinha = aposLoc.length > 0 ? aposLoc : antesLoc;
-
-      // Padrão estruturado: [Cód.Peça] [Qtde] [Descrição...]
-      // Exemplo: "3058383 2 CORREIA V8383"
-      const matchEstruturado = conteudoLinha.match(/^([A-Z0-9\-\/]{4,18})\s+(\d+)\s+(.+)$/i);
-
-      let codigo = '';
-      let quantidade = '1 und';
-      let descricao = '';
-
-      if (matchEstruturado) {
-        codigo = matchEstruturado[1].toUpperCase();
-        quantidade = `${matchEstruturado[2].trim()} und`;
-        descricao = matchEstruturado[3].trim();
-      } else {
-        const tokens = conteudoLinha.split(/\s+/).filter(Boolean);
-        if (tokens.length >= 2) {
-          codigo = tokens[0].toUpperCase();
-          if (/^\d+$/.test(tokens[1])) {
-            quantidade = `${tokens[1]} und`;
+          // Checa se o segundo token é o "Código" numérico da peça de 5 a 8 dígitos (ex: 1172207, 190820, 730970)
+          if (tokens.length >= 2 && /^\d{5,8}$/.test(tokens[1])) {
+            // Formato com coluna de Referência e coluna de Código:
+            codigo = tokens[0].toUpperCase(); // Pega a Referência
+            // tokens[1] é o Código que deve ser ignorado
             descricao = tokens.slice(2).join(' ').trim();
           } else {
-            const qIdx = tokens.findIndex((t, idx) => idx > 0 && /^\d+$/.test(t));
-            if (qIdx !== -1) {
-              quantidade = `${tokens[qIdx]} und`;
-              descricao = tokens.filter((_, idx) => idx !== 0 && idx !== qIdx).join(' ').trim();
-            } else {
-              descricao = tokens.slice(1).join(' ').trim();
+              // Padrão estruturado clássico de NF: [Cód.Peça] [Qtde] [Descrição...]
+              // Exemplo: "3058383 2 CORREIA V8383"
+              const matchEstruturado = conteudoLinha.match(/^([A-Z0-9\-\.\/]{4,20})\s+(\d+)\s+(.+)$/i);
+
+              if (matchEstruturado) {
+                codigo = matchEstruturado[1].toUpperCase();
+                quantidade = `${matchEstruturado[2].trim()} und`;
+                descricao = matchEstruturado[3].trim();
+              } else if (tokens.length >= 2) {
+                codigo = tokens[0].toUpperCase();
+                if (/^\d+$/.test(tokens[1])) {
+                  quantidade = `${tokens[1]} und`;
+                  descricao = tokens.slice(2).join(' ').trim();
+                } else {
+                  const qIdx = tokens.findIndex((t, idx) => idx > 0 && /^\d+$/.test(t));
+                  if (qIdx !== -1) {
+                    quantidade = `${tokens[qIdx]} und`;
+                    descricao = tokens.filter((_, idx) => idx !== 0 && idx !== qIdx).join(' ').trim();
+                  } else {
+                    descricao = tokens.slice(1).join(' ').trim();
+                  }
+                }
+              }
+            }
+
+            // Suporte para descrição em múltiplas linhas (continuação na linha seguinte)
+            while (i + 1 < linhas.length) {
+              const proxLinha = linhas[i + 1].trim();
+              // Não consome a linha se ela contiver uma locação válida (para não engolir o próximo item!)
+              if (proxLinha.match(regexLocacao)) {
+                break;
+              }
+
+              // Não consome se a linha começar com um código de peça seguido de número
+              if (/^[A-Z0-9\-\/]{4,18}\s+\d+/i.test(proxLinha)) {
+                break;
+              }
+
+              if (
+                !/^(?:Registros|Observa[cç][aã]o|Separado|Conferido|Data|Cliente|Filial|Vendedor)/i.test(proxLinha) &&
+                !/^(?:FAVOR COLOCAR|\d+\s*$)/i.test(proxLinha)
+              ) {
+                descricao = (descricao ? `${descricao} ` : '') + proxLinha;
+                i++;
+              } else {
+                break;
+              }
+            }
+
+            descricao = descricao.replace(/\b(?:Registros|Observa[cç][aã]o|Separado|Conferido).*/i, '').trim();
+
+            if (!descricao || descricao.length < 2) {
+              descricao = `Material ${codigo}`;
+            }
+
+            if (codigo && locacao) {
+              if (!itens.some((it) => it.codigo === codigo && it.localizacao === locacao)) {
+                itens.push({
+                  codigo: codigo,
+                  nome: descricao,
+                  localizacao: String(locacao),
+                  quantidade: quantidade,
+                  separado: false,
+                });
+              }
             }
           }
         }
-      }
 
-      // Suporte para descrição em múltiplas linhas (continuação na linha seguinte)
-      while (i + 1 < linhas.length) {
-        const proxLinha = linhas[i + 1].trim();
-        // Não consome a linha se ela contiver uma locação válida (para não engolir o próximo item!)
-        if (proxLinha.match(regexLocacao)) {
-          break;
+        // Fallback se não conseguiu quebrar por linhas (ex: OCR tudo em 1 linha contínua)
+        if (itens.length === 0) {
+          const regexSeq = /([0-9]{1,3}[A-Z][0-9]{2,3}|[A-Z]-\d{2}-\d{2})\s+([A-Z0-9\-\/]{4,15})\s+(\d+)\s+([A-Z\s0-9]{4,50}?)(?=[0-9]{1,3}[A-Z][0-9]{2,3}|Registros|Observa|$)/gi;
+          let seqMatch;
+          while ((seqMatch = regexSeq.exec(texto)) !== null) {
+            const q = seqMatch[3].trim();
+            itens.push({
+              localizacao: seqMatch[1].toUpperCase(),
+              codigo: seqMatch[2].toUpperCase(),
+              quantidade: `${q} und`,
+              nome: seqMatch[4].trim(),
+              separado: false,
+            });
+          }
         }
 
-        // Não consome se a linha começar com um código de peça seguido de número
-        if (/^[A-Z0-9\-\/]{4,18}\s+\d+/i.test(proxLinha)) {
-          break;
-        }
-
-        if (
-          !/^(?:Registros|Observa[cç][aã]o|Separado|Conferido|Data|Cliente|Filial|Vendedor)/i.test(proxLinha) &&
-          !/^(?:FAVOR COLOCAR|\d+\s*$)/i.test(proxLinha)
-        ) {
-          descricao = (descricao ? `${descricao} ` : '') + proxLinha;
-          i++;
-        } else {
-          break;
-        }
-      }
-
-      descricao = descricao.replace(/\b(?:Registros|Observa[cç][aã]o|Separado|Conferido).*/i, '').trim();
-
-      if (!descricao || descricao.length < 2) {
-        descricao = `Material ${codigo}`;
-      }
-
-      if (codigo && locacao) {
-        if (!itens.some((it) => it.codigo === codigo && it.localizacao === locacao)) {
+        // Se mesmo assim nenhum item foi parseado, cria 1 item genérico com o nome do arquivo
+        if (itens.length === 0) {
           itens.push({
-            codigo: codigo,
-            nome: descricao,
-            localizacao: String(locacao),
-            quantidade: quantidade,
+            codigo: 'MAT-001',
+            nome: 'Material importado (' + nomeArquivo + ')',
+            localizacao: 'A-01-01',
+            quantidade: '1 und',
             separado: false,
           });
         }
+
+        // Determina se o documento é uma OS ou NF
+        const isOS = /\b(?:OS|ORDEM\s+DE\s+SERVI[CÇ]O)\b/i.test(texto) || /\bOS[-_\s]?\d+/i.test(texto) || /OS/i.test(nomeArquivo);
+        const tipo_documento: TipoDocumento = isOS ? 'OS' : 'NF';
+
+        return {
+          numero_nota,
+          tipo_documento,
+          solicitante,
+          itens,
+          textoBruto: texto,
+        };
       }
-    }
-  }
-
-  // Fallback se não conseguiu quebrar por linhas (ex: OCR tudo em 1 linha contínua)
-  if (itens.length === 0) {
-    const regexSeq = /([0-9]{1,3}[A-Z][0-9]{2,3}|[A-Z]-\d{2}-\d{2})\s+([A-Z0-9\-\/]{4,15})\s+(\d+)\s+([A-Z\s0-9]{4,50}?)(?=[0-9]{1,3}[A-Z][0-9]{2,3}|Registros|Observa|$)/gi;
-    let seqMatch;
-    while ((seqMatch = regexSeq.exec(texto)) !== null) {
-      const q = seqMatch[3].trim();
-      itens.push({
-        localizacao: seqMatch[1].toUpperCase(),
-        codigo: seqMatch[2].toUpperCase(),
-        quantidade: `${q} und`,
-        nome: seqMatch[4].trim(),
-        separado: false,
-      });
-    }
-  }
-
-  // Se mesmo assim nenhum item foi parseado, cria 1 item genérico com o nome do arquivo
-  if (itens.length === 0) {
-    itens.push({
-      codigo: 'MAT-001',
-      nome: 'Material importado (' + nomeArquivo + ')',
-      localizacao: 'A-01-01',
-      quantidade: '1 und',
-      separado: false,
-    });
-  }
-
-  // Determina se o documento é uma OS ou NF
-  const isOS = /\b(?:OS|ORDEM\s+DE\s+SERVI[CÇ]O)\b/i.test(texto) || /\bOS[-_\s]?\d+/i.test(texto) || /OS/i.test(nomeArquivo);
-  const tipo_documento: TipoDocumento = isOS ? 'OS' : 'NF';
-
-  return {
-    numero_nota,
-    tipo_documento,
-    solicitante,
-    itens,
-    textoBruto: texto,
-  };
-}
