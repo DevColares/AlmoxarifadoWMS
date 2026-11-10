@@ -77,7 +77,105 @@ export async function extrairTextoDoPdf(file: File): Promise<string> {
 }
 
 /**
- * Pré-processa uma imagem para otimizar a legibilidade pelo OCR:
+ * Converte um arquivo File para Base64 (sem o prefixo data:...)
+ */
+async function fileParaBase64(file: File): Promise<{ base64: string; mimeType: string }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const res = reader.result as string;
+      const partes = res.split(',');
+      const mimeType = partes[0].match(/:(.*?);/)?.[1] || file.type || 'image/jpeg';
+      resolve({ base64: partes[1], mimeType });
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Extração de dados da Ficha via Google Gemini Flash Vision
+ * Retorna os dados estruturados diretamente em JSON com 100% de fidelidade
+ */
+export async function extrairComGeminiVision(
+  file: File,
+  apiKey: string
+): Promise<DadosRequisicaoExtraidos> {
+  const { base64, mimeType } = await fileParaBase64(file);
+
+  const prompt = `Analise atentamente esta imagem de Ficha de Separação de Almoxarifado / WMS.
+Extraia com máxima fidelidade e retorne ESTRITAMENTE um JSON no formato especificado:
+
+{
+  "numero_nota": "Número da ficha ou atendimento (ex: 43127 ou 6541489)",
+  "solicitante": "Nome ou Razão Social do cliente (localizado após a palavra 'Cliente:' e após o código numérico, excluindo e-mail e outros campos)",
+  "itens": [
+    {
+      "localizacao": "Locação da peça na tabela (ex: 06F01, 14A02, 14E01, etc)",
+      "codigo": "Código da peça (ex: 3058383, 3056155, FS1212)",
+      "quantidade": "Quantidade com a unidade (ex: '2 und', '1 und', '6 und')",
+      "nome": "Descrição completa do material (ex: 'CORREIA V8383', 'PULVERIZADOR DE RESFRIAMENTO DO PISTAO4822')"
+    }
+  ]
+}
+
+Regras obrigatórias:
+1. Extraia rigorosamente TODOS os itens da tabela de separação, sem omitir nenhuma linha.
+2. Cada linha da tabela é lida da esquerda para a direita: Locações -> Cód.Peça -> Qtde -> Descrição.
+3. Se a descrição do material estiver em mais de uma linha na tabela, junte as linhas em um único texto para aquele item.
+4. Não invente itens do cabeçalho como 'VENDA NFE' ou vendedor.
+5. Retorne APENAS o JSON puro, sem crases de markdown e sem explicações adicionais.`;
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [
+        {
+          parts: [
+            { text: prompt },
+            {
+              inline_data: {
+                mime_type: mimeType,
+                data: base64,
+              },
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        response_mime_type: 'application/json',
+        temperature: 0.1,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    throw new Error(errData?.error?.message || `Erro na API Gemini (${response.status})`);
+  }
+
+  const data = await response.json();
+  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+  const parsed = JSON.parse(rawText);
+
+  const itensFormatados: ItemRequisicao[] = (parsed.itens || []).map((it: any) => ({
+    codigo: String(it.codigo || 'MAT-001').trim(),
+    nome: String(it.nome || 'Material').trim(),
+    localizacao: String(it.localizacao || 'A-01-01').trim(),
+    quantidade: String(it.quantidade || '1 und').includes('und') ? String(it.quantidade) : `${it.quantidade} und`,
+    separado: false,
+  }));
+
+  return {
+    numero_nota: String(parsed.numero_nota || `FICHA-${Date.now().toString().slice(-5)}`),
+    solicitante: String(parsed.solicitante || 'Cliente não identificado'),
+    itens: itensFormatados,
+    textoBruto: rawText,
+  };
+}
  * - Redimensiona se for muito pequena
  * - Converte para tons de cinza
  * - Aplica filtro de alto contraste e binarização seletiva

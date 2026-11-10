@@ -12,6 +12,7 @@ import { ItemRequisicao } from '../types';
 import {
   extrairTextoDoPdf,
   extrairTextoDeImagem,
+  extrairComGeminiVision,
   analisarTextoRequisicao,
   DadosRequisicaoExtraidos
 } from '../utils/documentParser';
@@ -58,21 +59,31 @@ export function CriarRequisicao() {
     setErro(null);
 
     try {
+      const geminiApiKey = localStorage.getItem('GEMINI_API_KEY') || import.meta.env.VITE_GEMINI_API_KEY;
+
+      if (isImage && geminiApiKey) {
+        setMensagemProcessamento('Analisando ficha com IA Gemini Flash Vision...');
+        const parsed = await extrairComGeminiVision(file, geminiApiKey);
+        setDadosExtraidos(parsed);
+        enviarNotificacao('✅ Extração Concluída!', `${parsed.itens.length} itens extraídos via IA com alta precisão.`, 'sucesso');
+        return;
+      }
+
       let texto = '';
       if (isPdf) {
         setMensagemProcessamento('Lendo texto e tabelas do PDF...');
         texto = await extrairTextoDoPdf(file);
       } else {
-        setMensagemProcessamento('Executando OCR na foto/imagem...');
+        setMensagemProcessamento('Executando OCR Tesseract...');
         texto = await extrairTextoDeImagem(file);
       }
 
       const parsed = analisarTextoRequisicao(texto, file.name);
       setDadosExtraidos(parsed);
-      enviarNotificacao('Documento Carregado', `${parsed.itens.length} itens estruturados detectados.`, 'sucesso');
+      enviarNotificacao('Documento Carregado', `${parsed.itens.length} itens detectados.`, 'sucesso');
     } catch (err: any) {
       console.error('Erro ao ler documento:', err);
-      setErro('Não foi possível ler o texto do arquivo. Verifique a qualidade da imagem ou se o PDF está acessível.');
+      setErro(err?.message || 'Não foi possível ler o documento. Verifique a qualidade ou formato da imagem.');
     } finally {
       setProcessando(false);
     }

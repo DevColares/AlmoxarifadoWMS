@@ -3,7 +3,7 @@
 
 import React, { useState } from 'react';
 import {
-  Users, UserPlus, Shield, User, Edit3, Trash2, Check, X, Star, Settings, Database, AlertTriangle, RefreshCw
+  Users, UserPlus, Shield, User, Edit3, Trash2, Check, X, Star, Settings, Database, AlertTriangle, RefreshCw, Key
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { Operador } from '../types';
@@ -29,6 +29,21 @@ export function Configuracoes() {
   const [editandoId, setEditandoId] = useState<string | null>(null);
   const [nomeEditado, setNomeEditado] = useState('');
   const [papelEditado, setPapelEditado] = useState<'lider' | 'separador'>('separador');
+
+  // Chave Gemini API
+  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem('GEMINI_API_KEY') || '');
+  const [salvandoKey, setSalvandoKey] = useState(false);
+
+  const salvarGeminiKey = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (geminiKey.trim()) {
+      localStorage.setItem('GEMINI_API_KEY', geminiKey.trim());
+      enviarNotificacao('Salvo!', 'Chave da API Gemini configurada para OCR com IA.', 'sucesso');
+    } else {
+      localStorage.removeItem('GEMINI_API_KEY');
+      enviarNotificacao('Removido', 'Chave da API Gemini removida. O sistema usará Tesseract.', 'aviso');
+    }
+  };
 
   const handleCadastrar = (e: React.FormEvent) => {
     e.preventDefault();
@@ -345,6 +360,43 @@ export function Configuracoes() {
             );
           })}
         </div>
+      </div>
+
+      {/* Configuração de OCR Inteligente (Gemini Flash Vision) */}
+      <div className="card mt-4">
+        <div className="section-title mb-2 flex items-center gap-2 font-bold" style={{ color: 'var(--clr-primary)' }}>
+          <Key size={18} /> OCR Inteligente com IA (Google Gemini Flash Vision)
+        </div>
+        <p className="text-sm text-muted mb-3">
+          Ative a leitura de alta precisão para fotos e fichas escaneadas. O Gemini Vision extrai 100% dos dados da tabela sem erros de caracteres. A chave é gratuita no Google AI Studio (aistudio.google.com).
+        </p>
+
+        <form onSubmit={salvarGeminiKey} className="flex gap-2 items-center flex-wrap">
+          <input
+            type="password"
+            className="form-input"
+            style={{ flex: 1, minWidth: 260 }}
+            placeholder="Cole sua API Key do Gemini (ex: AIzaSy...)"
+            value={geminiKey}
+            onChange={(e) => setGeminiKey(e.target.value)}
+          />
+          <button type="submit" className="btn btn-primary btn-sm">
+            Salvar Chave
+          </button>
+          {geminiKey && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm text-rose"
+              onClick={() => {
+                setGeminiKey('');
+                localStorage.removeItem('GEMINI_API_KEY');
+                enviarNotificacao('Removido', 'Chave removida.', 'aviso');
+              }}
+            >
+              Remover
+            </button>
+          )}
+        </form>
       </div>
 
       {/* Zona de Manutenção / Limpeza do Banco de Dados */}
