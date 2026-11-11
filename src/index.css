@@ -5,6 +5,8 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  /* Impede que qualquer elemento quebre o layout horizontal */
+  min-width: 0;
 }
 
 :root {
@@ -64,6 +66,8 @@
 html {
   font-size: 16px;
   scroll-behavior: smooth;
+  overflow-x: hidden;
+  max-width: 100vw;
 }
 
 body {
@@ -74,12 +78,15 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
+  max-width: 100vw;
 }
 
 #root {
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
+  overflow-x: hidden;
+  width: 100%;
 }
 
 /* ===== SCROLLBAR CUSTOMIZADA ===== */
@@ -96,6 +103,8 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100dvh;
+  overflow-x: hidden;
+  width: 100%;
 }
 
 /* ===== HEADER ===== */
@@ -113,6 +122,9 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  /* Contenção horizontal */
+  width: 100%;
+  overflow: hidden;
 }
 
 .header-brand {
@@ -155,6 +167,9 @@ body {
   display: flex;
   align-items: center;
   gap: .75rem;
+  min-width: 0;
+  overflow: hidden;
+  flex-shrink: 1;
 }
 
 .header-status {
@@ -262,6 +277,9 @@ body {
   max-width: 1400px;
   width: 100%;
   margin: 0 auto;
+  /* Contém qualquer filho que tente vazar */
+  overflow-x: hidden;
+  box-sizing: border-box;
 }
 
 /* ===== CARDS ===== */
@@ -271,6 +289,11 @@ body {
   border-radius: var(--radius-lg);
   padding: 1.25rem;
   transition: border-color var(--dur-med), transform var(--dur-med), box-shadow var(--dur-med);
+  /* Contenção de overflow */
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  word-break: break-word;
 }
 .card:hover {
   border-color: var(--clr-surface2);
