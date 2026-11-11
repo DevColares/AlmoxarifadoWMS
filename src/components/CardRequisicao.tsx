@@ -101,48 +101,56 @@ export function CardRequisicao({ req }: Props) {
       style={{
         display: 'flex',
         flexDirection: 'column',
-        gap: '1rem',
+        gap: '.85rem',
         borderLeft: isOS ? '5px solid #f43f5e' : '5px solid #38bdf8',
-        background: isOS ? 'rgba(244, 63, 94, 0.03)' : 'var(--clr-surface)'
+        background: isOS ? 'rgba(244, 63, 94, 0.03)' : 'var(--clr-surface)',
+        /* Impede overflow horizontal no mobile */
+        minWidth: 0,
+        maxWidth: '100%',
+        overflow: 'hidden',
       }}
       aria-label={`Requisição ${req.numero_nota}`}
     >
       {/* Cabeçalho do card */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex flex-col gap-1" style={{ minWidth: 0 }}>
+      <div className="flex items-center justify-between gap-2" style={{ minWidth: 0 }}>
+        <div className="flex flex-col gap-1" style={{ minWidth: 0, flex: 1 }}>
           <div className="flex items-center gap-2 flex-wrap">
             {/* Badge de Diferenciação OS vs NF */}
             {isOS ? (
               <span
                 style={{
-                  fontSize: '0.7rem',
+                  fontSize: '0.65rem',
                   fontWeight: 900,
-                  letterSpacing: '0.06em',
-                  padding: '0.2rem 0.55rem',
+                  letterSpacing: '0.04em',
+                  padding: '0.18rem 0.45rem',
                   borderRadius: '6px',
                   background: 'rgba(244, 63, 94, 0.18)',
                   color: '#f43f5e',
                   border: '1px solid rgba(244, 63, 94, 0.45)',
-                  textTransform: 'uppercase'
+                  textTransform: 'uppercase',
+                  flexShrink: 0,
+                  whiteSpace: 'nowrap',
                 }}
               >
-                🛠️ O.S. (SERVIÇO)
+                🛠️ O.S.
               </span>
             ) : (
               <span
                 style={{
-                  fontSize: '0.7rem',
+                  fontSize: '0.65rem',
                   fontWeight: 800,
-                  letterSpacing: '0.04em',
-                  padding: '0.2rem 0.55rem',
+                  letterSpacing: '0.03em',
+                  padding: '0.18rem 0.45rem',
                   borderRadius: '6px',
                   background: 'rgba(56, 189, 248, 0.12)',
                   color: '#38bdf8',
                   border: '1px solid rgba(56, 189, 248, 0.35)',
-                  textTransform: 'uppercase'
+                  textTransform: 'uppercase',
+                  flexShrink: 0,
+                  whiteSpace: 'nowrap',
                 }}
               >
-                📄 NF VENDA
+                📄 NF
               </span>
             )}
 
@@ -160,8 +168,8 @@ export function CardRequisicao({ req }: Props) {
 
         {/* Cronômetro se em separação/pausado */}
         {(isEmSeparacao || isPausado) && (
-          <div style={{ textAlign: 'right', flexShrink: 0 }}>
-            <div style={{ fontSize: '.65rem', color: 'var(--clr-muted)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: '.1rem' }}>
+          <div style={{ textAlign: 'right', flexShrink: 0, maxWidth: '90px' }}>
+            <div style={{ fontSize: '.6rem', color: 'var(--clr-muted)', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: '.1rem', whiteSpace: 'nowrap' }}>
               {isPausado ? '⏸ Pausado' : '⏱ Tempo'}
             </div>
             <Cronometro req={req} />
