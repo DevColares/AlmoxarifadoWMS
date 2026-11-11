@@ -3,8 +3,8 @@
 
 import React, { useState } from 'react';
 import {
-  Clock, UserCheck, Truck, Pause, Play, CheckSquare,
-  MapPin, Package, ChevronRight, Zap
+  UserCheck, Truck, Pause, Play, CheckSquare,
+  MapPin, Package, ChevronRight, Zap, ChevronDown, ChevronUp, Check
 } from 'lucide-react';
 import { Requisicao } from '../types';
 import { useApp } from '../context/AppContext';
@@ -31,6 +31,7 @@ function Cronometro({ req }: { req: Requisicao }) {
 export function CardRequisicao({ req }: Props) {
   const { operadorAtivo, setViewAtual, setRequisicaoSelecionada, enviarNotificacao, solicitarConfirmacao } = useApp();
   const [carregando, setCarregando] = useState(false);
+  const [listaExpandida, setListaExpandida] = useState(false);
 
   const totalItens = req.itens.length;
   const itensSeparados = req.itens.filter((i) => i.separado).length;
@@ -207,7 +208,7 @@ export function CardRequisicao({ req }: Props) {
         </div>
       </div>
 
-      {/* Itens (preview) */}
+      {/* Itens (preview de localizações) */}
       <div className="flex items-center gap-2 text-xs text-muted">
         <MapPin size={12} />
         <span>
@@ -215,6 +216,131 @@ export function CardRequisicao({ req }: Props) {
           {req.itens.length > 2 && ` +${req.itens.length - 2} locais`}
         </span>
       </div>
+
+      {/* Botão toggle lista de materiais */}
+      <button
+        className="btn btn-ghost btn-sm"
+        style={{
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '.4rem',
+          fontSize: '.78rem',
+          color: 'var(--clr-muted)',
+          borderTop: '1px solid var(--clr-border)',
+          paddingTop: '.5rem',
+          marginTop: '-.25rem',
+          borderRadius: 0,
+        }}
+        onClick={() => setListaExpandida((v) => !v)}
+        aria-expanded={listaExpandida}
+        aria-controls={`lista-itens-${req.id}`}
+      >
+        <Package size={13} />
+        {listaExpandida ? 'Ocultar materiais' : `Ver ${req.itens.length} ${req.itens.length === 1 ? 'material' : 'materiais'}`}
+        {listaExpandida ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+      </button>
+
+      {/* Lista de materiais expandida */}
+      {listaExpandida && (
+        <div
+          id={`lista-itens-${req.id}`}
+          style={{ display: 'flex', flexDirection: 'column', gap: '.35rem', marginTop: '-.25rem' }}
+          aria-label="Lista de materiais"
+        >
+          {req.itens.map((item, idx) => (
+            <div
+              key={`${item.codigo}-${idx}`}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '.5rem',
+                padding: '.45rem .6rem',
+                borderRadius: 'var(--radius)',
+                background: item.separado
+                  ? 'rgba(16, 185, 129, 0.07)'
+                  : 'rgba(255,255,255,0.03)',
+                border: `1px solid ${item.separado ? 'rgba(16,185,129,0.25)' : 'var(--clr-border)'}`,
+                opacity: item.separado ? 0.72 : 1,
+              }}
+            >
+              {/* Indicador de separado */}
+              <div
+                style={{
+                  width: 18,
+                  height: 18,
+                  borderRadius: '50%',
+                  flexShrink: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: item.separado ? 'var(--clr-emerald, #10b981)' : 'var(--clr-border)',
+                }}
+                aria-hidden="true"
+              >
+                {item.separado && <Check size={11} color="#fff" strokeWidth={3} />}
+              </div>
+
+              {/* Localização */}
+              <span
+                style={{
+                  fontSize: '.68rem',
+                  fontWeight: 700,
+                  color: 'var(--clr-muted)',
+                  flexShrink: 0,
+                  minWidth: 44,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                <MapPin size={9} style={{ display: 'inline', marginRight: 2 }} />
+                {item.localizacao}
+              </span>
+
+              {/* Código + nome */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <span
+                  className="font-mono font-bold"
+                  style={{
+                    fontSize: '.82rem',
+                    color: item.separado ? 'var(--clr-muted)' : 'var(--clr-primary, #818cf8)',
+                  }}
+                >
+                  {item.codigo}
+                </span>
+                <div
+                  style={{
+                    fontSize: '.72rem',
+                    color: 'var(--clr-muted)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                  title={item.nome}
+                >
+                  {item.nome}
+                </div>
+              </div>
+
+              {/* Quantidade */}
+              <span
+                style={{
+                  fontSize: '.72rem',
+                  fontWeight: 800,
+                  padding: '.15rem .4rem',
+                  borderRadius: '5px',
+                  background: item.separado ? 'rgba(16,185,129,0.1)' : 'rgba(16,185,129,0.2)',
+                  color: 'var(--clr-emerald, #10b981)',
+                  flexShrink: 0,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {item.quantidade.toLowerCase().includes('und') ? item.quantidade : `${item.quantidade} und`}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Rodapé com ações */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem', marginTop: 'auto' }}>
